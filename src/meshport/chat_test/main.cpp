@@ -68,6 +68,9 @@ int psaHkdfFailStatus();
 #endif
 
 // Default LongFast key (public). Direct messages are end-to-end encrypted on top of it.
+static int txDbm = 10;     // TX power in dBm, applied at boot
+static int hopLimit = 3;   // hop limit for packets we send
+
 static const uint8_t kChannelKey[16] = {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
                                         0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01};
 
@@ -151,7 +154,7 @@ static bool sendPublic(const String &text)
     h.to = 0xFFFFFFFFu;            // broadcast
     h.from = myNode;
     h.id = packetCounter;
-    h.flags = 0x03 | (0x03 << kFlagHopStartShift);
+    h.flags = static_cast<uint8_t>(hopLimit | (hopLimit << kFlagHopStartShift));
     h.channel = channelByte;
     std::vector<uint8_t> frame;
     if (!sealFrame(kChannelKey, sizeof(kChannelKey), h, d, frame)) {
@@ -195,6 +198,17 @@ static void handleLine(String cmd)
         sendText(cmd.substring(5));
     } else if (cmd.startsWith("pub ")) {
         sendPublic(cmd.substring(4));
+#ifdef MESHPORT_TDECK_SCREEN
+    } else if (cmd.startsWith("time ") && cmd.length() == 9) {
+        int hh = cmd.substring(5, 7).toInt();
+        int mm = cmd.substring(7, 9).toInt();
+        if (hh >= 0 && hh < 24 && mm >= 0 && mm < 60) {
+            setClock(hh, mm);
+            Serial.printf("clock set to %02d:%02d\n", hh, mm);
+        } else {
+            Serial.println("time needs HHMM, e.g. time 1046");
+        }
+#endif
     } else {
         Serial.println("unknown command, type help");
     }
@@ -224,7 +238,8 @@ static const Theme kThemes[] = {
 static constexpr int kThemeCount = 4;
 static int themeIndex = 1;   // Neon Green, matches the target home screen
 
-enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate };
+enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
+                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -294,7 +309,7 @@ static int calStep = 0;
 static bool wifiOn = false;
 static bool btOn = false;
 static bool gpsOn = false;
-static constexpr int kSettingsCount = 7;
+static constexpr int kSettingsCount = 6;
 static constexpr int kWidgetFirst = 6;
 
 static void toggleWifi()
@@ -342,6 +357,18 @@ static uint16_t mix(uint16_t a, uint16_t b, int t)
     return static_cast<uint16_t>((r << 11) | (g << 5) | bl);
 }
 
+// Backdrop color at row y (the same gradient drawBackdrop paints).
+static uint16_t backdropAt(int y)
+{
+    return mix(mix(bgColor(), theme().accent, 14), bgColor(), y * 255 / 239);
+}
+
+// Fill color of every glass card. Text drawn on a card must use this as its background.
+static uint16_t glassBase()
+{
+    return mix(theme().panel, bgColor(), 110);
+}
+
 // Background: a soft vertical gradient, lit from the top.
 static void drawBackdrop()
 {
@@ -352,45 +379,14 @@ static void drawBackdrop()
     }
 }
 
-// Glass card: a translucent-looking panel with a bright top sheen and a light rim.
-// LovyanGFX has no alpha blending, so the glass is faked with layered colors.
+// Glass card: a dark translucent-looking panel with an accent rim and a thin highlight.
+// LovyanGFX has no alpha blending, so the glass is faked with layered colors. No sheen
+// overlay: text on a card must match the card fill exactly, or a box shows behind it.
 static void glassCard(int x, int y, int w, int h, int r)
 {
-    // Dark translucent base, a faint sheen on the top third, and a thin accent rim.
-    uint16_t base = mix(theme().panel, bgColor(), 110);
-    uint16_t sheen = mix(theme().panel, TFT_WHITE, 28);
-    canvas.fillRoundRect(x, y, w, h, r, base);
-    int sheenH = h / 3;
-    if (sheenH > 2) {
-        canvas.fillRoundRect(x + 2, y + 2, w - 4, sheenH, r > 2 ? r - 2 : 1, sheen);
-    }
+    canvas.fillRoundRect(x, y, w, h, r, glassBase());
     canvas.drawRoundRect(x, y, w, h, r, mix(theme().accent, bgColor(), 110));
-}
-
-static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
-{
-    canvas.setTextColor(fg, bg);
-    canvas.setCursor(x, y);
-    canvas.print(s);
-}
-
-static void centerText(int cx, int y, const char *s, uint16_t fg, uint16_t bg)
-{
-    canvas.setTextColor(fg, bg);
-    canvas.setCursor(cx - static_cast<int>(canvas.textWidth(s)) / 2, y);
-    canvas.print(s);
-}
-
-static void drawHeader(const String &title)
-{
-    useFont();
-    canvas.fillRect(0, 0, 320, 22, theme().panel);
-    canvas.drawFastHLine(0, 22, 320, theme().accent);
-    // Back chevron and label. Touch zone: x < 66, y < 22.
-    canvas.drawLine(9, 11, 14, 6, theme().accent);
-    canvas.drawLine(9, 11, 14, 16, theme().accent);
-    putText(20, 3, "Home", theme().accent, theme().panel);
-    centerText(160, 3, title.c_str(), theme().fg, theme().panel);
+    canvas.drawFastHLine(x + r, y + 1, w - 2 * r, mix(glassBase(), TFT_WHITE, 40));
 }
 
 static void drawPanel(int x, int y, int w, int h)
@@ -404,7 +400,89 @@ static void drawToggle(int x, int y, bool on)
     canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
 }
 
+// --- Clock, GPS interval, and saved settings --------------------------------
+static bool clockSet = false;
+static uint32_t clockEpochSec = 0;
+static uint32_t clockSetMs = 0;
+static int gpsIntervalIdx = 1;
+static const char *kGpsIntervals[4] = {"15 s", "30 s", "1 min", "5 min"};
+
+static void setClock(int hh, int mm)
+{
+    clockEpochSec = static_cast<uint32_t>(hh * 3600 + mm * 60);
+    clockSetMs = millis();
+    clockSet = true;
+}
+
+// HH:MM from the last 'time HHMM' command, or --:-- until it is set.
+static const char *clockText()
+{
+    static char buf[8];
+    if (!clockSet) {
+        snprintf(buf, sizeof(buf), "--:--");
+        return buf;
+    }
+    uint32_t secs = (clockEpochSec + (millis() - clockSetMs) / 1000) % 86400;
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", (unsigned long)(secs / 3600), (unsigned long)((secs / 60) % 60));
+    return buf;
+}
+
+static void loadSettings()
+{
+    Preferences p;
+    p.begin("meshport", true);
+    txDbm = p.getInt("txDbm", txDbm);
+    hopLimit = p.getInt("hop", hopLimit);
+    gpsIntervalIdx = p.getInt("gpsInt", gpsIntervalIdx);
+    themeIndex = p.getInt("theme", themeIndex);
+    bgIndex = p.getInt("bg", bgIndex);
+    gpsOn = p.getBool("gpsOn", gpsOn);
+    p.end();
+}
+
+static void saveSettings()
+{
+    Preferences p;
+    p.begin("meshport", false);
+    p.putInt("txDbm", txDbm);
+    p.putInt("hop", hopLimit);
+    p.putInt("gpsInt", gpsIntervalIdx);
+    p.putInt("theme", themeIndex);
+    p.putInt("bg", bgIndex);
+    p.putBool("gpsOn", gpsOn);
+    p.end();
+}
+
 // Line icons for the app row. Drawn with primitives so they stay sharp at 320x240.
+// Widget logos, drawn with integer math only.
+static void drawWifiIcon(int cx, int cy, uint16_t col)
+{
+    canvas.fillCircle(cx, cy + 6, 2, col);
+    for (int r = 5; r <= 11; r += 3) {
+        int dx = r * 7 / 10;
+        canvas.drawLine(cx - dx, cy + 6 - dx, cx, cy + 6 - r, col);
+        canvas.drawLine(cx - dx, cy + 7 - dx, cx, cy + 7 - r, col);
+        canvas.drawLine(cx, cy + 6 - r, cx + dx, cy + 6 - dx, col);
+        canvas.drawLine(cx, cy + 7 - r, cx + dx, cy + 7 - dx, col);
+    }
+}
+
+static void drawGpsIcon(int cx, int cy, uint16_t col, uint16_t hole)
+{
+    canvas.fillCircle(cx, cy - 3, 6, col);
+    canvas.fillTriangle(cx - 5, cy - 1, cx + 5, cy - 1, cx, cy + 8, col);
+    canvas.fillCircle(cx, cy - 3, 2, hole);
+}
+
+static void drawBtIcon(int cx, int cy, uint16_t col)
+{
+    canvas.drawLine(cx - 5, cy - 4, cx + 5, cy + 4, col);
+    canvas.drawLine(cx + 5, cy + 4, cx, cy + 8, col);
+    canvas.drawLine(cx, cy + 8, cx, cy - 8, col);
+    canvas.drawLine(cx, cy - 8, cx + 5, cy - 4, col);
+    canvas.drawLine(cx + 5, cy - 4, cx - 5, cy + 4, col);
+}
+
 static void drawAppIcon(int idx, int cx, int cy, uint16_t col)
 {
     switch (idx) {
@@ -455,19 +533,20 @@ static void drawHome()
     useFont();
     drawBackdrop();
 
-    // Status bar: live dot and uptime, frequency, link pills on the right.
+    // Status bar: uptime on the left, clock in the center, link pills on the right.
+    uint16_t strip = backdropAt(3);
     canvas.fillCircle(10, 11, 3, 0x07E0);
     unsigned long mins = millis() / 60000;
     char up[24];
     snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
-    putText(18, 3, up, theme().fg, bgColor());
-    putText(112, 3, "906.9M", kMuted, bgColor());
+    putText(18, 3, up, theme().fg, strip);
+    centerText(160, 3, clockText(), theme().fg, strip);
     const char *links[3] = {"WiFi", "GPS", "BT"};
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
     const int linkX[3] = {194, 240, 282};
     const int linkW[3] = {42, 36, 30};
     for (int i = 0; i < 3; i++) {
-        uint16_t fill = linkOn[i] ? mix(theme().panel, theme().accent, 60) : bgColor();
+        uint16_t fill = linkOn[i] ? mix(theme().panel, theme().accent, 60) : strip;
         uint16_t txt = linkOn[i] ? theme().accent : kMuted;
         canvas.fillRoundRect(linkX[i], 3, linkW[i], 16, 8, fill);
         canvas.drawRoundRect(linkX[i], 3, linkW[i], 16, 8, linkOn[i] ? theme().accent : kBorder);
@@ -475,51 +554,57 @@ static void drawHome()
     }
     canvas.drawFastHLine(0, 22, 320, theme().accent);
 
-    // Alerts card (left): header with SNR pill, then three stat rows.
+    // Alerts card (left).
     drawPanel(6, 32, 150, 98);
-    putText(16, 38, "ALERTS", theme().accent, theme().panel);
+    putText(16, 38, "ALERTS", theme().accent, glassBase());
     char snr[16];
     snprintf(snr, sizeof(snr), "SNR %+.1f", lastSnr);
-    canvas.fillRoundRect(78, 36, 72, 15, 7, mix(theme().panel, theme().accent, 60));
-    centerText(114, 37, snr, theme().accent, mix(theme().panel, theme().accent, 60));
+    uint16_t pill = mix(theme().panel, theme().accent, 60);
+    canvas.fillRoundRect(78, 36, 72, 15, 7, pill);
+    centerText(114, 37, snr, theme().accent, pill);
 
     String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
     if (lastMsg.length() > 11) lastMsg = lastMsg.substring(0, 11);
     char heard[12];
     snprintf(heard, sizeof(heard), "%u", (unsigned)nodes.size());
     glassCard(12, 56, 138, 16, 5);
-    putText(18, 57, "Nodes heard", theme().fg, theme().panel);
+    putText(18, 57, "Nodes heard", theme().fg, glassBase());
     canvas.fillRoundRect(124, 57, 20, 13, 6, theme().accent);
     centerText(134, 57, heard, bgColor(), theme().accent);
 
     glassCard(12, 76, 138, 16, 5);
     String lastLine = String("Last: ") + lastMsg;
-    putText(18, 77, lastLine.c_str(), theme().fg, theme().panel);
+    putText(18, 77, lastLine.c_str(), theme().fg, glassBase());
     canvas.fillCircle(144, 84, 3, chatLines.empty() ? kMuted : 0x07E0);
 
     glassCard(12, 96, 138, 16, 5);
-    putText(18, 97, "LongFast 906.9 MHz", theme().fg, theme().panel);
+    putText(18, 97, "LongFast 906.9 MHz", theme().fg, glassBase());
 
-    // Widget card (right): WiFi, GPS, Bluetooth toggles.
+    // Widget card (right): WiFi, GPS, Bluetooth with their logos and toggles.
     drawPanel(164, 32, 150, 98);
-    putText(174, 38, "WIDGETS", theme().accent, theme().panel);
-    putText(270, 38, "PWR", kMuted, theme().panel);
+    putText(174, 35, "WIDGETS", theme().accent, glassBase());
+    putText(270, 35, "PWR", kMuted, glassBase());
     const char *names[3] = {"WiFi", "GPS", "BT"};
     for (int i = 0; i < 3; i++) {
         int x = 176 + i * 46;
         bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) canvas.drawRoundRect(x - 6, 54, 46, 70, 8, theme().accent);
-        centerText(x + 18, 58, names[i], theme().fg, theme().panel);
-        drawToggle(x, 80, linkOn[i]);
-        centerText(x + 18, 106, linkOn[i] ? "ON" : "OFF", linkOn[i] ? theme().accent : kMuted, theme().panel);
+        if (sel) canvas.drawRoundRect(x - 6, 52, 46, 76, 8, theme().accent);
+        uint16_t ic = linkOn[i] ? theme().accent : kMuted;
+        if (i == 0) drawWifiIcon(x + 18, 60, ic);
+        else if (i == 1) drawGpsIcon(x + 18, 60, ic, glassBase());
+        else drawBtIcon(x + 18, 60, ic);
+        centerText(x + 18, 72, names[i], theme().fg, glassBase());
+        drawToggle(x, 90, linkOn[i]);
+        centerText(x + 18, 112, linkOn[i] ? "ON" : "OFF", ic, glassBase());
     }
-    canvas.drawFastVLine(219, 58, 66, kBorder);
-    canvas.drawFastVLine(265, 58, 66, kBorder);
+    canvas.drawFastVLine(219, 56, 66, kBorder);
+    canvas.drawFastVLine(265, 56, 66, kBorder);
 
     // Apps card: six icon tiles.
     drawPanel(6, 136, 308, 92);
-    putText(16, 142, "APPS", theme().accent, theme().panel);
-    putText(206, 142, "Trackball / Tap", kMuted, theme().panel);
+    putText(16, 142, "APPS", theme().accent, glassBase());
+    putText(190, 142, "Trackball / Tap", kMuted, glassBase());
+    static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Set"};
     for (int i = 0; i < kTileCount; i++) {
         int cx = 26 + i * 53, cy = 176;
         bool sel = (homeSel == i);
@@ -527,12 +612,11 @@ static void drawHome()
             canvas.fillCircle(cx, cy, 17, theme().accent);
             drawAppIcon(i, cx, cy, bgColor());
         } else {
-            canvas.fillCircle(cx, cy, 17, theme().panel);
+            canvas.fillCircle(cx, cy, 17, glassBase());
             canvas.drawCircle(cx, cy, 17, theme().accent);
             drawAppIcon(i, cx, cy, theme().accent);
         }
-        static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Set"};
-        centerText(cx, 199, kShort[i], sel ? theme().accent : theme().fg, theme().panel);
+        centerText(cx, 199, kShort[i], sel ? theme().accent : theme().fg, glassBase());
     }
 }
 
@@ -551,19 +635,19 @@ static void drawPublic()
     for (size_t i = first; i < chatLines.size(); i++, row++) {
         int y = 28 + row * 19;
         glassCard(4, y, 312, 17, 6);
-        putText(12, y + 1, chatLines[i].c_str(), theme().fg, theme().panel);
+        putText(12, y + 1, chatLines[i].c_str(), theme().fg, glassBase());
     }
 
     // Composer.
     drawPanel(4, 200, 312, 34);
-    putText(12, 209, ">", theme().accent, theme().panel);
+    putText(12, 209, ">", theme().accent, glassBase());
     if (inputBuf.length() == 0) {
-        putText(26, 209, "Message the mesh", kMuted, theme().panel);
+        putText(26, 209, "Message the mesh", kMuted, glassBase());
     } else {
         int start = inputBuf.length() > 34 ? static_cast<int>(inputBuf.length()) - 34 : 0;
         String shown = inputBuf.substring(start);
         if ((millis() / 500) % 2 == 0) shown += "_";
-        putText(26, 209, shown.c_str(), theme().fg, theme().panel);
+        putText(26, 209, shown.c_str(), theme().fg, glassBase());
     }
 }
 
@@ -577,8 +661,8 @@ static void drawNodes()
 
     if (nodes.empty()) {
         drawPanel(16, 70, 288, 72);
-        centerText(160, 86, "No nodes heard yet", theme().fg, theme().panel);
-        centerText(160, 108, "Nearby Meshtastic nodes show here", kMuted, theme().panel);
+        centerText(160, 86, "No nodes heard yet", theme().fg, glassBase());
+        centerText(160, 108, "Nearby Meshtastic nodes show here", kMuted, glassBase());
         return;
     }
 
@@ -589,7 +673,7 @@ static void drawNodes()
 
         char id[12];
         snprintf(id, sizeof(id), "%08lX", (unsigned long)nodes[i].id);
-        putText(14, y + 5, id, theme().accent, theme().panel);
+        putText(14, y + 5, id, theme().accent, glassBase());
 
         // Signal bar: -120 dBm (empty) to -50 dBm (full).
         int r = static_cast<int>(nodes[i].rssi);
@@ -602,31 +686,86 @@ static void drawNodes()
 
         char info[24];
         snprintf(info, sizeof(info), "%ddBm %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
-        putText(184, y + 5, info, theme().fg, theme().panel);
+        putText(184, y + 5, info, theme().fg, glassBase());
     }
 }
 
-static void drawSettings()
+static bool isSettingsScreen(Screen s)
+{
+    return s == Screen::Settings || s == Screen::SettingsDevice || s == Screen::SettingsLora ||
+           s == Screen::SettingsGps || s == Screen::SettingsDisplay;
+}
+
+// Labels for the rows of one settings screen. Returns the row count.
+static int buildSettingItems(Screen s, char items[][40])
+{
+    switch (s) {
+    case Screen::Settings:
+        snprintf(items[0], 40, "Device");
+        snprintf(items[1], 40, "LoRa radio");
+        snprintf(items[2], 40, "GPS");
+        snprintf(items[3], 40, "Display");
+        snprintf(items[4], 40, "Calibrate touch");
+        snprintf(items[5], 40, "Back");
+        return 6;
+    case Screen::SettingsDevice:
+        snprintf(items[0], 40, "Node ID: %08lX", (unsigned long)myNode);
+        snprintf(items[1], 40, "Role: Client");
+        snprintf(items[2], 40, "Clock: %s", clockText());
+        snprintf(items[3], 40, "Short name: %04lX", (unsigned long)(myNode & 0xFFFF));
+        snprintf(items[4], 40, "Back");
+        return 5;
+    case Screen::SettingsLora:
+        snprintf(items[0], 40, "Region: US 902-928");
+        snprintf(items[1], 40, "Preset: LongFast");
+        snprintf(items[2], 40, "Frequency: %.3f MHz", loraFreqMHz);
+        snprintf(items[3], 40, "TX power: %d dBm (reboot)", txDbm);
+        snprintf(items[4], 40, "Hop limit: %d", hopLimit);
+        snprintf(items[5], 40, "Back");
+        return 6;
+    case Screen::SettingsGps:
+        snprintf(items[0], 40, "GPS: %s", gpsOn ? "on" : "off");
+        snprintf(items[1], 40, "Update every: %s", kGpsIntervals[gpsIntervalIdx]);
+        snprintf(items[2], 40, "Altitude: no fix");
+        snprintf(items[3], 40, "Back");
+        return 4;
+    case Screen::SettingsDisplay:
+        snprintf(items[0], 40, "Theme: %s", kThemes[themeIndex].name);
+        snprintf(items[1], 40, "Background: %s", kBackgroundNames[bgIndex]);
+        snprintf(items[2], 40, "Back");
+        return 3;
+    default:
+        return 0;
+    }
+}
+
+static void drawSettingsScreen(Screen s)
 {
     useFont();
     drawBackdrop();
-    drawHeader("Settings");
-
-    char items[kSettingsCount][32];
-    snprintf(items[0], sizeof(items[0]), "Theme: %s", kThemes[themeIndex].name);
-    snprintf(items[1], sizeof(items[1]), "Background: %s", kBackgroundNames[bgIndex]);
-    snprintf(items[2], sizeof(items[2]), "WiFi: %s", wifiOn ? "on" : "off");
-    snprintf(items[3], sizeof(items[3]), "Bluetooth: %s", btOn ? "on" : "off");
-    snprintf(items[4], sizeof(items[4]), "GPS: %s", gpsOn ? "on" : "off");
-    snprintf(items[5], sizeof(items[5]), "Calibrate touch");
-    snprintf(items[6], sizeof(items[6]), "Back");
-
-    for (int i = 0; i < kSettingsCount; i++) {
-        bool sel = (i == settingsSel);
+    const char *title = "Settings";
+    switch (s) {
+    case Screen::SettingsDevice:  title = "Device"; break;
+    case Screen::SettingsLora:    title = "LoRa radio"; break;
+    case Screen::SettingsGps:     title = "GPS"; break;
+    case Screen::SettingsDisplay: title = "Display"; break;
+    default: break;
+    }
+    drawHeader(title);
+    char items[8][40];
+    int n = buildSettingItems(s, items);
+    if (settingsSel >= n) settingsSel = n - 1;
+    if (settingsSel < 0) settingsSel = 0;
+    for (int i = 0; i < n; i++) {
         int y = 36 + i * 26;
-        if (sel) canvas.fillRoundRect(6, y, 308, 22, 6, theme().accent);
-        else glassCard(6, y, 308, 22, 6);
-        putText(14, y + 3, items[i], sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
+        bool sel = (i == settingsSel);
+        if (sel) {
+            canvas.fillRoundRect(6, y, 308, 22, 6, theme().accent);
+            putText(14, y + 3, items[i], bgColor(), theme().accent);
+        } else {
+            glassCard(6, y, 308, 22, 6);
+            putText(14, y + 3, items[i], theme().fg, glassBase());
+        }
     }
 }
 
@@ -635,7 +774,7 @@ static void drawSoon()
     useFont();
     drawBackdrop();
     drawHeader(soonName);
-    centerText(160, 100, "Coming in a later build", theme().fg, bgColor());
+    centerText(160, 100, "Coming in a later build", theme().fg, backdropAt(100));
 }
 
 static int signalY(float rssi)
@@ -653,8 +792,8 @@ static void drawSpectrum()
     drawHeader("Spectrum");
     drawPanel(4, 28, 312, 168);
     if (!specScanned) {
-        centerText(160, 100, "Press Enter to scan", theme().fg, theme().panel);
-        centerText(160, 122, "Sweeps 902 to 928 MHz", kMuted, theme().panel);
+        centerText(160, 100, "Press Enter to scan", theme().fg, glassBase());
+        centerText(160, 122, "Sweeps 902 to 928 MHz", kMuted, glassBase());
     } else {
         int peak = 0;
         for (int i = 1; i < kSpecPoints; i++) {
@@ -662,7 +801,7 @@ static void drawSpectrum()
         }
         char pk[40];
         snprintf(pk, sizeof(pk), "Peak %.1f MHz  %d dBm", 902.0f + 0.5f * peak, specDb[peak]);
-        putText(12, 34, pk, theme().accent, theme().panel);
+        putText(12, 34, pk, theme().accent, glassBase());
         for (int i = 0; i < kSpecPoints; i++) {
             int level = specDb[i];
             if (level < -120) level = -120;
@@ -671,8 +810,8 @@ static void drawSpectrum()
             canvas.fillRect(12 + i * 5, 186 - h, 4, h, i == peak ? 0xFD20 : theme().accent);
         }
     }
-    putText(4, 202, "902 MHz", kMuted, bgColor());
-    putText(256, 202, "927 MHz", kMuted, bgColor());
+    putText(4, 202, "902 MHz", kMuted, backdropAt(202));
+    putText(256, 202, "927 MHz", kMuted, backdropAt(202));
 }
 
 static void drawSignal()
@@ -684,7 +823,7 @@ static void drawSignal()
     canvas.drawFastHLine(10, signalY(-60), 300, kBorder);
     canvas.drawFastHLine(10, signalY(-100), 300, kBorder);
     if (rssiHist.size() < 2) {
-        centerText(160, 110, "Waiting for packets", kMuted, theme().panel);
+        centerText(160, 110, "Waiting for packets", kMuted, glassBase());
     }
     for (size_t i = 1; i < rssiHist.size(); i++) {
         int x0 = 10 + static_cast<int>((i - 1) * 5), x1 = 10 + static_cast<int>(i * 5);
@@ -695,7 +834,7 @@ static void drawSignal()
     char line[48];
     float last = rssiHist.empty() ? 0 : rssiHist.back();
     snprintf(line, sizeof(line), "RSSI %.0f dBm   SNR %.1f dB", last, lastSnr);
-    putText(10, 202, line, theme().fg, bgColor());
+    putText(10, 202, line, theme().fg, backdropAt(202));
 }
 
 static void drawContacts()
@@ -704,8 +843,8 @@ static void drawContacts()
     drawBackdrop();
     drawHeader("Contacts");
     drawPanel(4, 34, 312, 120);
-    centerText(160, 64, "Encrypted contacts", theme().fg, theme().panel);
-    centerText(160, 92, "Coming after the two-device test", kMuted, theme().panel);
+    centerText(160, 64, "Encrypted contacts", theme().fg, glassBase());
+    centerText(160, 92, "Coming after the two-device test", kMuted, glassBase());
 }
 
 static void drawCalibrate()
@@ -721,10 +860,10 @@ static void drawCalibrate()
         canvas.drawFastVLine(kTargetX[i], kTargetY[i] - 10, 21, col);
     }
     drawPanel(48, 92, 224, 62);
-    centerText(160, 104, "Tap the glowing crosshair", theme().fg, theme().panel);
+    centerText(160, 104, "Tap the glowing crosshair", theme().fg, glassBase());
     char step[24];
     snprintf(step, sizeof(step), "Corner %d of 4", calStep + 1);
-    centerText(160, 126, step, theme().accent, theme().panel);
+    centerText(160, 126, step, theme().accent, glassBase());
 }
 
 static void drawScreen()
@@ -737,7 +876,11 @@ static void drawScreen()
     case Screen::Home: drawHome(); break;
     case Screen::Public: drawPublic(); break;
     case Screen::Nodes: drawNodes(); break;
-    case Screen::Settings: drawSettings(); break;
+    case Screen::Settings:
+    case Screen::SettingsDevice:
+    case Screen::SettingsLora:
+    case Screen::SettingsGps:
+    case Screen::SettingsDisplay: drawSettingsScreen(screen); break;
     }
     canvas.pushSprite(&lcd, 0, 0);
 }
@@ -765,16 +908,55 @@ static void openTile(int i)
     }
 }
 
-static void activateSetting(int i)
+// Back from a settings screen: sub-screens return to Settings, Settings returns home.
+static void backFrom(Screen s)
 {
-    switch (i) {
-    case 0: themeIndex = (themeIndex + 1) % kThemeCount; break;
-    case 1: bgIndex = (bgIndex + 1) % kBackgroundCount; break;
-    case 2: toggleWifi(); break;
-    case 3: toggleBt(); break;
-    case 4: toggleGps(); break;
-    case 5: calStep = 0; screen = Screen::Calibrate; break;
-    default: goHome(); break;
+    settingsSel = 0;
+    if (s == Screen::Settings) goHome();
+    else if (isSettingsScreen(s)) screen = Screen::Settings;
+    else goHome();
+}
+
+static void activateSettingItem(Screen s, int i)
+{
+    switch (s) {
+    case Screen::Settings:
+        settingsSel = 0;
+        if (i == 0) screen = Screen::SettingsDevice;
+        else if (i == 1) screen = Screen::SettingsLora;
+        else if (i == 2) screen = Screen::SettingsGps;
+        else if (i == 3) screen = Screen::SettingsDisplay;
+        else if (i == 4) { calStep = 0; screen = Screen::Calibrate; }
+        else goHome();
+        break;
+    case Screen::SettingsDevice:
+        if (i == 4) backFrom(s);
+        break;
+    case Screen::SettingsLora:
+        if (i == 3) {
+            txDbm = (txDbm == 10) ? 14 : (txDbm == 14) ? 17 : (txDbm == 17) ? 20 : 10;
+            saveSettings();
+        } else if (i == 4) {
+            hopLimit = hopLimit % 7 + 1;
+            saveSettings();
+        } else if (i == 5) {
+            backFrom(s);
+        }
+        break;
+    case Screen::SettingsGps:
+        if (i == 0) toggleGps();
+        else if (i == 1) gpsIntervalIdx = (gpsIntervalIdx + 1) % 4;
+        else if (i == 3) backFrom(s);
+        saveSettings();
+        break;
+    case Screen::SettingsDisplay:
+        if (i == 0) themeIndex = (themeIndex + 1) % kThemeCount;
+        else if (i == 1) bgIndex = (bgIndex + 1) % kBackgroundCount;
+        else if (i == 2) backFrom(s);
+        saveSettings();
+        break;
+    default:
+        break;
     }
 }
 
@@ -840,11 +1022,15 @@ static void handleKey(int c)
         } else if (c >= 32 && c < 127) {
             inputBuf += static_cast<char>(c);
         }
-    } else if (screen == Screen::Settings) {
-        if (c == 'w') settingsSel = (settingsSel + kSettingsCount - 1) % kSettingsCount;
-        else if (c == 's') settingsSel = (settingsSel + 1) % kSettingsCount;
-        else if (c == '\r' || c == '\n') activateSetting(settingsSel);
-        else if (c == 'q' || c == 8 || c == 127) goHome();
+    } else if (isSettingsScreen(screen)) {
+        char tmp[8][40];
+        int n = buildSettingItems(screen, tmp);
+        if (n > 0) {
+            if (c == 'w') settingsSel = (settingsSel + n - 1) % n;
+            else if (c == 's') settingsSel = (settingsSel + 1) % n;
+            else if (c == '\r' || c == '\n') activateSettingItem(screen, settingsSel);
+            else if (c == 'q' || c == 8 || c == 127) backFrom(screen);
+        }
     } else if (screen == Screen::Spectrum && (c == 'r' || c == '\r' || c == '\n')) {
         sweepSpectrum();
     } else {
@@ -1042,7 +1228,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
     touchToScreen(x, y, sx, sy);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
     if (screen != Screen::Home && sy < 22 && sx < 66) {
-        goHome();
+        backFrom(screen);
     } else if (screen == Screen::Public && sy < 22 && sx >= 250) {
         openTile(kTileCount - 1);
     } else if (screen == Screen::Home) {
@@ -1055,13 +1241,13 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             homeSel = idx;
             openTile(idx);
         }
-    } else if (screen == Screen::Settings) {
-        if (sy >= 36 && sy < 36 + kSettingsCount * 26) {
-            int i = constrain((sy - 36) / 26, 0, kSettingsCount - 1);
+    } else if (isSettingsScreen(screen)) {
+        char tmp[8][40];
+        int n = buildSettingItems(screen, tmp);
+        if (sy >= 36 && sy < 36 + n * 26) {
+            int i = constrain((sy - 36) / 26, 0, n - 1);
             settingsSel = i;
-            activateSetting(i);
-        } else if (sy < 18) {
-            goHome();
+            activateSettingItem(screen, i);
         }
     } else if (screen == Screen::Spectrum && sy >= 18) {
         sweepSpectrum();
@@ -1144,6 +1330,9 @@ void setup()
     Serial.println("meshport chat");
 
     // T-Deck peripheral power (LoRa radio). Must be HIGH before the radio responds.
+#ifdef MESHPORT_TDECK_SCREEN
+    loadSettings();
+#endif
     pinMode(CHAT_POWER_PIN, OUTPUT);
     digitalWrite(CHAT_POWER_PIN, CHAT_POWER_ON);
     delay(200);
@@ -1162,7 +1351,7 @@ void setup()
     s.cr = kLongFastCodingRateDenom;
     s.syncWord = kLongFastSyncWord;
     s.preambleLen = kLongFastPreambleLen;
-    s.powerDbm = 10;   // lower TX power reduces current spikes on weak supplies
+    s.powerDbm = txDbm;   // set in Settings > LoRa radio, applied at boot
     s.tcxoVoltage = 1.8f;
     s.useLdo = false;
     if (!driver->begin(s)) {
