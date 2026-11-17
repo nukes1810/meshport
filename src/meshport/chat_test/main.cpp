@@ -137,7 +137,7 @@ static void sendText(const String &text)
     }
 }
 
-static void sendPublic(const String &text)
+static bool sendPublic(const String &text)
 {
     packetCounter++;
     Data d;
@@ -153,13 +153,14 @@ static void sendPublic(const String &text)
     std::vector<uint8_t> frame;
     if (!sealFrame(kChannelKey, sizeof(kChannelKey), h, d, frame)) {
         Serial.println("could not build public message");
-        return;
+        return false;
     }
     if (driver->send(frame)) {
         Serial.printf("public sent (%u bytes on air)\n", (unsigned)frame.size());
-    } else {
-        Serial.printf("send failed, RadioLib code %d\n", (int)driver->lastTxError());
+        return true;
     }
+    Serial.printf("send failed, RadioLib code %d\n", (int)driver->lastTxError());
+    return false;
 }
 
 static void handleLine(String cmd)
@@ -232,12 +233,16 @@ static void drawScreen()
 
 static void handleKey(int c)
 {
+    Serial.printf("key 0x%02X\n", c);
     if (c == '\r' || c == '\n') {
         if (inputBuf.length()) {
             String text = inputBuf;
             inputBuf = "";
-            sendPublic(text);
-            addLine("me: " + text);
+            if (sendPublic(text)) {
+                addLine("me: " + text);
+            } else {
+                addLine("! not sent, see USB log");
+            }
         }
     } else if (c == 8 || c == 127) {
         if (inputBuf.length()) inputBuf.remove(inputBuf.length() - 1);
@@ -310,6 +315,19 @@ void setup()
     Wire.begin(18, 8);         // T-Deck I2C (keyboard)
     lcd.init();
     lcd.setRotation(1);
+    Serial.printf("screen %d x %d\n", (int)lcd.width(), (int)lcd.height());
+    lcd.fillScreen(TFT_BLACK);
+    lcd.setTextColor(TFT_YELLOW, TFT_BLACK);
+    lcd.setTextSize(2);
+    lcd.setCursor(0, 0);
+    lcd.print("TOP LEFT");
+    lcd.setCursor(lcd.width() - 16 * 9, 0);
+    lcd.print("TOP RIGHT");
+    lcd.setCursor(0, lcd.height() - 16);
+    lcd.print("BOTTOM LEFT");
+    lcd.setCursor(lcd.width() - 16 * 12, lcd.height() - 16);
+    lcd.print("BOTTOM RIGHT");
+    delay(3000);
     addLine("type a message, Enter sends");
     drawScreen();
 #endif
