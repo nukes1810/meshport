@@ -28,6 +28,10 @@
 #include "../DeviceIdentity.cpp"
 
 using namespace meshport;
+namespace meshport {
+int psaHkdfFailStep();
+int psaHkdfFailStatus();
+}
 
 // Meshtastic T-Deck pins (variants/esp32s3/t-deck/variant.h).
 #define CHAT_LORA_SCK 40
@@ -123,6 +127,8 @@ static void handleLine(String cmd)
         Serial.printf("x25519 public: %s\n", x25519PublicKey(me.priv, t1) ? "ok" : "FAIL");
         Serial.printf("x25519 shared: %s\n", x25519SharedSecret(me.priv, me.pub, t2) ? "ok" : "FAIL");
         Serial.printf("hkdf derive:   %s\n", deriveDirectKey(me.priv, me.pub, k) ? "ok" : "FAIL");
+        Serial.printf("  hkdf failed at step %d (0 import,1 setup,2 salt,3 secret,4 info,5 output), psa status %d\n",
+                      psaHkdfFailStep(), psaHkdfFailStatus());
         std::vector<uint8_t> ct;
         uint8_t dummy[4] = {1, 2, 3, 4};
         Serial.printf("seal:          %s\n", sealDirect(k, 1, nullptr, 0, dummy, 4, ct) ? "ok" : "FAIL");

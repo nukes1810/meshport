@@ -50,28 +50,41 @@ bool x25519SharedSecret(const uint8_t priv[32], const uint8_t peerPub[32], uint8
     return st == PSA_SUCCESS && len == 32;
 }
 
+namespace {
+int gHkdfFailStep = -1;
+int gHkdfFailStatus = 0;
+}
+
+int psaHkdfFailStep() { return gHkdfFailStep; }
+int psaHkdfFailStatus() { return gHkdfFailStatus; }
+
 bool hkdfSha256(const uint8_t *ikm, size_t ikmLen, const uint8_t *salt, size_t saltLen,
                 const uint8_t *info, size_t infoLen, uint8_t *out, size_t outLen)
 {
-    if (!psaReady()) return false;
+    gHkdfFailStep = -1;
+    gHkdfFailStatus = 0;
+    if (!psaReady()) { gHkdfFailStep = 0; return false; }
     psa_key_derivation_operation_t op = PSA_KEY_DERIVATION_OPERATION_INIT;
     psa_key_id_t secret = PSA_KEY_ID_NULL;
     psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
     psa_set_key_type(&attr, PSA_KEY_TYPE_DERIVE);
     psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
     psa_set_key_algorithm(&attr, PSA_ALG_HKDF(PSA_ALG_SHA_256));
-    // PSA rejects a zero-length salt input; an absent salt is the same as all zeros in HKDF.
-    bool saltOk = (saltLen == 0) ||
-                  psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, salt, saltLen) == PSA_SUCCESS;
-    bool ok = psa_import_key(&attr, ikm, ikmLen, &secret) == PSA_SUCCESS &&
-              psa_key_derivation_setup(&op, PSA_ALG_HKDF(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
-              saltOk &&
-              psa_key_derivation_input_key(&op, PSA_KEY_DERIVATION_INPUT_SECRET, secret) == PSA_SUCCESS &&
-              psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_INFO, info, infoLen) == PSA_SUCCESS &&
-              psa_key_derivation_output_bytes(&op, out, outLen) == PSA_SUCCESS;
+    psa_status_t st;
+    int step = 0;
+    st = psa_import_key(&attr, ikm, ikmLen, &secret);
+    if (st == PSA_SUCCESS) { step = 1; st = psa_key_derivation_setup(&op, PSA_ALG_HKDF(PSA_ALG_SHA_256)); }
+    if (st == PSA_SUCCESS) { step = 2; if (saltLen) st = psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, salt, saltLen); }
+    if (st == PSA_SUCCESS) { step = 3; st = psa_key_derivation_input_key(&op, PSA_KEY_DERIVATION_INPUT_SECRET, secret); }
+    if (st == PSA_SUCCESS) { step = 4; st = psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_INFO, info, infoLen); }
+    if (st == PSA_SUCCESS) { step = 5; st = psa_key_derivation_output_bytes(&op, out, outLen); }
+    if (st != PSA_SUCCESS) {
+        gHkdfFailStep = step;
+        gHkdfFailStatus = (int)st;
+    }
     psa_key_derivation_abort(&op);
     psa_destroy_key(secret);
-    return ok;
+    return st == PSA_SUCCESS;
 }
 
 namespace {
