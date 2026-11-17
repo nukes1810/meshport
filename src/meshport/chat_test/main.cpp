@@ -326,9 +326,14 @@ static void drawHeader(const String &title)
 {
     canvas.fillRect(0, 0, 320, 22, theme().panel);
     canvas.fillRect(0, 21, 320, 2, theme().accent);
+    canvas.fillRoundRect(4, 2, 58, 18, 6, theme().accent);
+    canvas.setTextSize(1);
+    canvas.setTextColor(bgColor(), theme().accent);
+    canvas.setCursor(12, 7);
+    canvas.print("< HOME");
     canvas.setTextSize(2);
     canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(8, 3);
+    canvas.setCursor(70, 3);
     canvas.print(title);
 }
 
@@ -447,6 +452,12 @@ static void drawPublic()
 {
     canvas.fillScreen(bgColor());
     drawHeader("Public chat");
+    canvas.fillRoundRect(256, 2, 60, 18, 6, theme().panel);
+    canvas.drawRoundRect(256, 2, 60, 18, 6, theme().accent);
+    canvas.setTextSize(1);
+    canvas.setTextColor(theme().accent, theme().panel);
+    canvas.setCursor(270, 7);
+    canvas.print("SET");
     // Newest messages in rounded rows, input in its own panel at the bottom.
     size_t first = chatLines.size() > 9 ? chatLines.size() - 9 : 0;
     int row = 0;
@@ -713,6 +724,11 @@ static void handleKey(int c)
     const bool track = (c >= 0x80 && c <= 0x84);
     if (track && screen == Screen::Public) {
         // Trackball never types into the chat: left leaves, center sends or leaves when empty.
+        if (c == 0x80 && inputBuf.length() == 0) {
+            openTile(kTileCount - 1);
+            drawScreen();
+            return;
+        }
         if (c == 0x80 || c == 0x81 || c == 0x83) return;
         if (c == 0x82 || (c == 0x84 && inputBuf.length() == 0)) {
             goHome();
@@ -956,7 +972,11 @@ static void handleTouchTap(uint16_t x, uint16_t y)
     int sx = 0, sy = 0;
     touchToScreen(x, y, sx, sy);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
-    if (screen == Screen::Home) {
+    if (screen != Screen::Home && sy < 22 && sx < 66) {
+        goHome();
+    } else if (screen == Screen::Public && sy < 22 && sx >= 250) {
+        openTile(kTileCount - 1);
+    } else if (screen == Screen::Home) {
         if (sy >= 30 && sy < 130 && sx >= 162) {
             int w = constrain((sx - 162) / 51, 0, 2);
             homeSel = kWidgetFirst + w;
