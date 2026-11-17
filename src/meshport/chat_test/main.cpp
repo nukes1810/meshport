@@ -255,9 +255,10 @@ static int settingsSel = 0;
 static const char *kTiles[] = {"Public", "Contacts", "Nodes", "Spectrum", "Signal", "Settings"};
 static constexpr int kTileCount = 6;
 static constexpr int kAppMax = 24;
-static int appCount = kTileCount;              // apps in the launcher
-static int appOrder[kAppMax] = {0, 1, 2, 3, 4, 5};   // app ids in launcher order (saved)
-static const char *kAppNames[kTileCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup"};
+static constexpr int kAppCount = 7;   // Chat, Maps, Nodes, Spec, Signal, Setup, Contacts
+static int appCount = kAppCount;              // apps in the launcher
+static int appOrder[kAppMax] = {0, 1, 2, 3, 4, 5, 6};   // app ids in launcher order (saved)
+static const char *kAppNames[kAppCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup", "Contacts"};
 static const char *soonName = "";
 
 struct NodeEntry {
@@ -639,19 +640,21 @@ static void loadSettings()
     wifiPass = p.getString("wifiPass", "");
     wifiOn = p.getBool("wifiOn", wifiOn);
     {
-        // Apply the saved launcher order only if it is a valid permutation of the apps.
+        // Apply the saved launcher order. Older saves list fewer apps: the rest are appended.
         String ord = p.getString("appOrder", "");
-        if (static_cast<int>(ord.length()) == appCount) {
-            bool seen[kAppMax];
-            int next[kAppMax];
-            bool ok = true;
-            for (int i = 0; i < appCount; i++) seen[i] = false;
-            for (int i = 0; i < appCount && ok; i++) {
-                int v = ord[i] - '0';
-                if (v < 0 || v >= appCount || seen[v]) ok = false;
-                else { seen[v] = true; next[i] = v; }
-            }
-            if (ok) for (int i = 0; i < appCount; i++) appOrder[i] = next[i];
+        int n = static_cast<int>(ord.length());
+        bool ok = n >= 1 && n <= appCount;
+        bool seen[kAppMax] = {};
+        int next[kAppMax];
+        int k = 0;
+        for (int i = 0; i < n && ok; i++) {
+            int v = ord[i] - '0';
+            if (v < 0 || v >= appCount || seen[v]) ok = false;
+            else { seen[v] = true; next[k++] = v; }
+        }
+        if (ok) {
+            for (int v = 0; v < appCount; v++) if (!seen[v]) next[k++] = v;
+            for (int i = 0; i < appCount; i++) appOrder[i] = next[i];
         }
     }
     p.end();
@@ -1031,6 +1034,12 @@ static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
         canvas.fillRoundRect(cx - 4, cy - 1, 3, 9, 1, col);
         canvas.fillRoundRect(cx + 1, cy - 5, 3, 13, 1, col);
         canvas.fillRoundRect(cx + 6, cy - 9, 3, 17, 1, col);
+        break;
+    case 6: // Contacts: two people
+        canvas.fillCircle(cx - 4, cy - 4, 3, col);
+        canvas.fillRoundRect(cx - 9, cy + 1, 10, 7, 3, col);
+        canvas.drawCircle(cx + 4, cy - 4, 3, col);
+        canvas.drawRoundRect(cx, cy + 1, 9, 7, 3, col);
         break;
     case 5: // Settings: gear
         drawGear(cx, cy, col, fill);
@@ -1440,12 +1449,29 @@ static void drawMap()
     putText(4, kMapY + kMapH - 13, status, TFT_WHITE, TFT_BLACK);
 }
 
-// All apps: a 4-column grid, three rows per page. The page follows the selection.
+// All apps: a 4-column grid that scrolls by row. Three rows show at a time.
 static constexpr int kGridCols = 4;
 static constexpr int kGridRows = 3;
-static constexpr int kGridPerPage = kGridCols * kGridRows;
 static int appSel = 0;                 // position in appOrder that is selected
+static int appScrollRow = 0;           // first grid row on screen
 static bool appMoving = false;         // picked up: arrows move the app
+
+static int appRows() { return (appCount + kGridCols - 1) / kGridCols; }
+
+static void appScrollBy(int rows)
+{
+    int maxScroll = max(0, appRows() - kGridRows);
+    appScrollRow = constrain(appScrollRow + rows, 0, maxScroll);
+}
+
+// Keeps the selected row on screen.
+static void appKeepVisible()
+{
+    int row = appSel / kGridCols;
+    if (row < appScrollRow) appScrollRow = row;
+    if (row >= appScrollRow + kGridRows) appScrollRow = row - kGridRows + 1;
+    appScrollBy(0);
+}
 
 // Moves the selection by delta positions. While moving, the app moves with it.
 static void appStep(int delta)
@@ -1457,6 +1483,7 @@ static void appStep(int delta)
         appOrder[target] = t;
     }
     appSel = target;
+    appKeepVisible();
 }
 
 static void drawAppGrid()
@@ -1464,12 +1491,11 @@ static void drawAppGrid()
     useFont();
     drawBackdrop();
     drawHeader(appMoving ? "Move app" : "All apps");
-    int page = appSel / kGridPerPage;
-    for (int k = 0; k < kGridPerPage; k++) {
-        int pos = page * kGridPerPage + k;
-        if (pos >= appCount) break;
-        int cx = 40 + (k % kGridCols) * 80;
-        int cy = 62 + (k / kGridCols) * 60;
+    for (int pos = 0; pos < appCount; pos++) {
+        int row = pos / kGridCols - appScrollRow;
+        if (row < 0 || row >= kGridRows) continue;
+        int cx = 40 + (pos % kGridCols) * 80;
+        int cy = 62 + row * 60;
         int id = appOrder[pos];
         bool sel = (pos == appSel);
         uint16_t tileBg = sel ? (appMoving ? theme().fg : theme().accent) : subCardBase();
@@ -1480,11 +1506,14 @@ static void drawAppGrid()
         useFontSmall();
         centerText(cx, cy + 26, kAppNames[id], sel ? theme().accent : theme().fg, backdropAt(cy + 26));
     }
-    // Page dots.
-    int pages = (appCount + kGridPerPage - 1) / kGridPerPage;
-    for (int p = 0; p < pages; p++) {
-        uint16_t dot = (p == page) ? theme().accent : kBorder;
-        canvas.fillCircle(160 - (pages - 1) * 6 + p * 12, 230, 3, dot);
+    // Scroll bar on the right, only when the list is taller than the screen.
+    int rows = appRows();
+    if (rows > kGridRows) {
+        const int trackY = 40, trackH = 160;
+        int thumbH = max(24, trackH * kGridRows / rows);
+        int thumbY = trackY + (trackH - thumbH) * appScrollRow / (rows - kGridRows);
+        canvas.fillRoundRect(314, trackY, 4, trackH, 2, kBorder);
+        canvas.fillRoundRect(314, thumbY, 4, thumbH, 2, theme().accent);
     }
 }
 
@@ -1860,6 +1889,7 @@ static void openTile(int i)
         mapCy = mercY(0.0, mapZoom);
         break;
     case 2: screen = Screen::Nodes; break;
+    case 6: screen = Screen::Nodes; break;   // Contacts: shows the node list until direct-message contacts exist
     case 5: screen = Screen::Settings; settingsSel = 0; break;
     case 3:
         screen = Screen::Spectrum;
@@ -2002,6 +2032,7 @@ static void handleKey(int c)
         if (c == 'g') {
             screen = Screen::AppGrid;
             appSel = 0;
+            appScrollRow = 0;
             appMoving = false;
         } else if (homeSel >= kWidgetFirst) {
             int w = homeSel - kWidgetFirst;
@@ -2283,6 +2314,11 @@ static void recordCalTap(uint16_t x, uint16_t y)
     }
 }
 
+// Touch state for drag-scrolling the app grid.
+static uint16_t touchDownX = 0, touchDownY = 0;
+static int touchAnchor = 0;
+static bool touchDragged = false;
+
 static void handleTouchTap(uint16_t x, uint16_t y)
 {
     int sx = 0, sy = 0;
@@ -2301,6 +2337,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             // Applications header: open the full app grid.
             screen = Screen::AppGrid;
             appSel = 0;
+            appScrollRow = 0;
             appMoving = false;
         } else if (sy >= 140 && sy < 194) {
             int idx = constrain(sx / 53, 0, kTileCount - 1);
@@ -2318,8 +2355,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
     } else if (screen == Screen::AppGrid && sy >= 32 && sy < 212) {
         int col = constrain(sx / 80, 0, kGridCols - 1);
         int row = constrain((sy - 32) / 60, 0, kGridRows - 1);
-        int page = appSel / kGridPerPage;
-        int pos = page * kGridPerPage + row * kGridCols + col;
+        int pos = (appScrollRow + row) * kGridCols + col;
         if (pos < appCount) {
             appSel = pos;
             appMoving = false;
@@ -2355,23 +2391,40 @@ static void pollTouch()
     uint8_t points = status & 0x0F;
     if (points > 0) {
         uint8_t p[8];
-        if (gt911Read(0x8150, p, 8) && !wasDown && millis() - lastTap > 400) {
-            lastTap = millis();
+        if (gt911Read(0x8150, p, 8)) {
             // Measured layout: X low/high at bytes 0-1, Y low/high at bytes 2-3, size at byte 4.
             uint16_t x = p[0] | (p[1] << 8);
             uint16_t y = p[2] | (p[3] << 8);
-            Serial.printf("touch bytes %02X %02X %02X %02X %02X %02X %02X %02X\n", p[0], p[1], p[2], p[3],
-                          p[4], p[5], p[6], p[7]);
-            Serial.printf("touch raw x=%u y=%u\n", x, y);
-            if (screen == Screen::Calibrate) {
-                recordCalTap(x, y);
-                drawScreen();
-            } else {
-                handleTouchTap(x, y);
+            if (!wasDown) {
+                touchDownX = x;
+                touchDownY = y;
+                touchAnchor = 239 - static_cast<int>(x);   // screen Y, as handleTouchTap maps it
+                touchDragged = false;
+                Serial.printf("touch raw x=%u y=%u\n", x, y);
+                if (screen == Screen::Calibrate) {
+                    if (millis() - lastTap > 400) {
+                        lastTap = millis();
+                        recordCalTap(x, y);
+                        drawScreen();
+                    }
+                } else if (screen != Screen::AppGrid && millis() - lastTap > 400) {
+                    lastTap = millis();
+                    handleTouchTap(x, y);
+                }
+            } else if (screen == Screen::AppGrid) {
+                // Dragging scrolls the grid one row per 28 px. A drag never opens an app.
+                int sy = 239 - static_cast<int>(x);
+                while (sy - touchAnchor >= 28) { appScrollBy(-1); touchAnchor += 28; touchDragged = true; }
+                while (touchAnchor - sy >= 28) { appScrollBy(1); touchAnchor -= 28; touchDragged = true; }
             }
         }
         wasDown = true;
     } else {
+        // Grid taps fire on release, so a drag that starts on a tile does not open it.
+        if (wasDown && screen == Screen::AppGrid && !touchDragged && millis() - lastTap > 400) {
+            lastTap = millis();
+            handleTouchTap(touchDownX, touchDownY);
+        }
         wasDown = false;
     }
     gt911Write(0x814E, 0);
