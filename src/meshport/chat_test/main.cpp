@@ -900,6 +900,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
 static void pollTouch()
 {
     static bool wasDown = false;
+    static uint32_t lastTap = 0;
     static uint32_t last = 0;
     if (!gt911Addr) return;
     if (millis() - last < 30) return;
@@ -910,7 +911,8 @@ static void pollTouch()
     uint8_t points = status & 0x0F;
     if (points > 0) {
         uint8_t p[8];
-        if (gt911Read(0x8150, p, 8) && !wasDown) {
+        if (gt911Read(0x8150, p, 8) && !wasDown && millis() - lastTap > 400) {
+            lastTap = millis();
             // Measured layout: X low/high at bytes 0-1, Y low/high at bytes 2-3, size at byte 4.
             uint16_t x = p[0] | (p[1] << 8);
             uint16_t y = p[2] | (p[3] << 8);
