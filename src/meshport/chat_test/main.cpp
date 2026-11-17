@@ -32,6 +32,7 @@
 #ifdef MESHPORT_TDECK_SCREEN
 #include <Wire.h>
 #include "TDeckScreen.h"
+#include <WiFi.h>
 #endif
 
 using namespace meshport;
@@ -249,6 +250,37 @@ static void noteNode(uint32_t id, float rssi)
 
 static const Theme &theme() { return kThemes[themeIndex]; }
 
+static const uint16_t kBackgrounds[] = {TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
+static const char *kBackgroundNames[] = {"Black", "Navy", "Charcoal", "Forest"};
+static constexpr int kBackgroundCount = 4;
+static int bgIndex = 0;
+static uint16_t bgColor() { return kBackgrounds[bgIndex]; }
+
+static bool wifiOn = false;
+static bool btOn = false;
+static bool gpsOn = false;
+static constexpr int kSettingsCount = 6;
+static constexpr int kWidgetFirst = 6;
+
+static void toggleWifi()
+{
+    wifiOn = !wifiOn;
+    WiFi.mode(wifiOn ? WIFI_STA : WIFI_OFF);
+    Serial.printf("wifi %s\n", wifiOn ? "on" : "off");
+}
+
+static void toggleBt()
+{
+    btOn = !btOn;
+    Serial.printf("bluetooth %s (radio stack not wired yet)\n", btOn ? "on" : "off");
+}
+
+static void toggleGps()
+{
+    gpsOn = !gpsOn;
+    Serial.printf("gps %s (GPS pins not wired yet)\n", gpsOn ? "on" : "off");
+}
+
 static void addLine(const String &s)
 {
     chatLines.push_back(s.substring(0, kLineChars));
@@ -258,7 +290,7 @@ static void addLine(const String &s)
 static void drawHeader(const String &title)
 {
     lcd.fillRect(0, 0, 320, 18, theme().accent);
-    lcd.setTextColor(theme().bg, theme().accent);
+    lcd.setTextColor(bgColor(), theme().accent);
     lcd.setTextSize(2);
     lcd.setCursor(4, 1);
     lcd.print(title);
@@ -266,34 +298,46 @@ static void drawHeader(const String &title)
 
 static void drawHome()
 {
-    lcd.fillScreen(theme().bg);
+    lcd.fillScreen(bgColor());
     char title[24];
     snprintf(title, sizeof(title), "meshport %08lX", (unsigned long)myNode);
     drawHeader(title);
     for (int i = 0; i < kTileCount; i++) {
         int col = i % 3, row = i / 3;
-        int x = col * 106 + 4, y = 22 + row * 110;
+        int x = col * 106 + 4, y = 22 + row * 82;
         bool sel = (i == homeSel);
-        lcd.fillRect(x, y, 98, 102, sel ? theme().accent : theme().bg);
-        lcd.drawRect(x, y, 98, 102, theme().fg);
-        lcd.setTextColor(sel ? theme().bg : theme().fg, sel ? theme().accent : theme().bg);
+        lcd.fillRoundRect(x, y, 98, 78, 8, sel ? theme().accent : theme().fg);
+        lcd.setTextColor(bgColor(), sel ? theme().accent : theme().fg);
         lcd.setTextSize(2);
-        lcd.setCursor(x + 6, y + 42);
+        lcd.setCursor(x + 6, y + 30);
         lcd.print(kTiles[i]);
+    }
+    const char *names[3] = {"WiFi", "BT", "GPS"};
+    bool states[3] = {wifiOn, btOn, gpsOn};
+    for (int i = 0; i < 3; i++) {
+        int x = 4 + i * 106, y = 190;
+        bool sel = (homeSel == kWidgetFirst + i);
+        lcd.fillRoundRect(x, y, 98, 44, 8, sel ? theme().accent : bgColor());
+        lcd.drawRoundRect(x, y, 98, 44, 8, theme().fg);
+        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
+        lcd.setCursor(x + 8, y + 14);
+        char label[16];
+        snprintf(label, sizeof(label), "%s %s", names[i], states[i] ? "ON" : "off");
+        lcd.print(label);
     }
 }
 
 static void drawPublic()
 {
-    lcd.fillScreen(theme().bg);
+    lcd.fillScreen(bgColor());
     drawHeader("Public chat");
-    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextColor(theme().fg, bgColor());
     lcd.setTextSize(2);
     for (size_t i = 0; i < chatLines.size(); i++) {
         lcd.setCursor(0, 22 + static_cast<int>(i) * 16);
         lcd.print(chatLines[i]);
     }
-    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setTextColor(theme().accent, bgColor());
     lcd.setCursor(0, 220);
     lcd.print("> ");
     lcd.print(inputBuf.substring(0, kLineChars - 2));
@@ -301,11 +345,11 @@ static void drawPublic()
 
 static void drawNodes()
 {
-    lcd.fillScreen(theme().bg);
+    lcd.fillScreen(bgColor());
     char title[24];
     snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
-    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextColor(theme().fg, bgColor());
     lcd.setTextSize(2);
     uint32_t now = millis();
     for (size_t i = 0; i < nodes.size(); i++) {
@@ -319,40 +363,45 @@ static void drawNodes()
         lcd.setCursor(0, 22);
         lcd.print("No nodes heard yet");
     }
-    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setTextColor(theme().accent, bgColor());
     lcd.setCursor(0, 220);
     lcd.print("q: back");
 }
 
 static void drawSettings()
 {
-    lcd.fillScreen(theme().bg);
+    lcd.fillScreen(bgColor());
     drawHeader("Settings");
     lcd.setTextSize(2);
-    char themeLine[32];
-    snprintf(themeLine, sizeof(themeLine), "Theme: %s", kThemes[themeIndex].name);
-    const char *items[2] = {themeLine, "Back"};
-    for (int i = 0; i < 2; i++) {
+    char items[kSettingsCount][32];
+    snprintf(items[0], sizeof(items[0]), "Theme: %s", kThemes[themeIndex].name);
+    snprintf(items[1], sizeof(items[1]), "Background: %s", kBackgroundNames[bgIndex]);
+    snprintf(items[2], sizeof(items[2]), "WiFi: %s", wifiOn ? "on" : "off");
+    snprintf(items[3], sizeof(items[3]), "Bluetooth: %s", btOn ? "on" : "off");
+    snprintf(items[4], sizeof(items[4]), "GPS: %s", gpsOn ? "on" : "off");
+    snprintf(items[5], sizeof(items[5]), "Back");
+    for (int i = 0; i < kSettingsCount; i++) {
         bool sel = (i == settingsSel);
-        lcd.setTextColor(sel ? theme().bg : theme().fg, sel ? theme().accent : theme().bg);
-        lcd.fillRect(0, 40 + i * 32, 320, 28, sel ? theme().accent : theme().bg);
-        lcd.setCursor(6, 46 + i * 32);
+        int y = 40 + i * 30;
+        lcd.fillRoundRect(4, y, 312, 26, 6, sel ? theme().accent : bgColor());
+        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
+        lcd.setCursor(12, y + 4);
         lcd.print(items[i]);
     }
-    lcd.setTextColor(theme().accent, theme().bg);
-    lcd.setCursor(0, 220);
+    lcd.setTextColor(theme().accent, bgColor());
+    lcd.setCursor(0, 222);
     lcd.print("Enter: change  q: back");
 }
 
 static void drawSoon()
 {
-    lcd.fillScreen(theme().bg);
+    lcd.fillScreen(bgColor());
     drawHeader(soonName);
-    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextColor(theme().fg, bgColor());
     lcd.setTextSize(2);
     lcd.setCursor(0, 60);
     lcd.print("Coming in a later build");
-    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setTextColor(theme().accent, bgColor());
     lcd.setCursor(0, 220);
     lcd.print("q: back");
 }
@@ -386,17 +435,47 @@ static void openTile(int i)
     }
 }
 
+static void activateSetting(int i)
+{
+    switch (i) {
+    case 0: themeIndex = (themeIndex + 1) % kThemeCount; break;
+    case 1: bgIndex = (bgIndex + 1) % kBackgroundCount; break;
+    case 2: toggleWifi(); break;
+    case 3: toggleBt(); break;
+    case 4: toggleGps(); break;
+    default: goHome(); break;
+    }
+}
+
+static void activateWidget(int i)
+{
+    if (i == 0) toggleWifi();
+    else if (i == 1) toggleBt();
+    else toggleGps();
+}
+
 static void handleKey(int c)
 {
     Serial.printf("key 0x%02X\n", c);
     if (c == 27) {
         goHome();
     } else if (screen == Screen::Home) {
-        if (c == 'w') homeSel = (homeSel + kTileCount - 3) % kTileCount;
-        else if (c == 's') homeSel = (homeSel + 3) % kTileCount;
-        else if (c == 'a') homeSel = (homeSel + kTileCount - 1) % kTileCount;
-        else if (c == 'd') homeSel = (homeSel + 1) % kTileCount;
-        else if (c == '\r' || c == '\n') openTile(homeSel);
+        if (c == 'a') {
+            if (homeSel >= kWidgetFirst) homeSel = kWidgetFirst + (homeSel - kWidgetFirst + 2) % 3;
+            else homeSel = (homeSel / 3) * 3 + (homeSel % 3 + 2) % 3;
+        } else if (c == 'd') {
+            if (homeSel >= kWidgetFirst) homeSel = kWidgetFirst + (homeSel - kWidgetFirst + 1) % 3;
+            else homeSel = (homeSel / 3) * 3 + (homeSel % 3 + 1) % 3;
+        } else if (c == 'w') {
+            if (homeSel >= kWidgetFirst) homeSel -= 3;
+            else if (homeSel >= 3) homeSel -= 3;
+        } else if (c == 's') {
+            if (homeSel < kWidgetFirst && homeSel < 3) homeSel += 3;
+            else if (homeSel >= 3 && homeSel < kWidgetFirst) homeSel = kWidgetFirst + (homeSel - 3);
+        } else if (c == '\r' || c == '\n') {
+            if (homeSel < kWidgetFirst) openTile(homeSel);
+            else activateWidget(homeSel - kWidgetFirst);
+        }
     } else if (screen == Screen::Public) {
         if (c == '\r' || c == '\n') {
             if (inputBuf.length()) {
@@ -415,11 +494,10 @@ static void handleKey(int c)
             inputBuf += static_cast<char>(c);
         }
     } else if (screen == Screen::Settings) {
-        if (c == 'w' || c == 's') settingsSel = 1 - settingsSel;
-        else if (c == '\r' || c == '\n') {
-            if (settingsSel == 0) themeIndex = (themeIndex + 1) % kThemeCount;
-            else goHome();
-        } else if (c == 'q' || c == 8 || c == 127) goHome();
+        if (c == 'w') settingsSel = (settingsSel + kSettingsCount - 1) % kSettingsCount;
+        else if (c == 's') settingsSel = (settingsSel + 1) % kSettingsCount;
+        else if (c == '\r' || c == '\n') activateSetting(settingsSel);
+        else if (c == 'q' || c == 8 || c == 127) goHome();
     } else {
         if (c == 'q' || c == 8 || c == 127) goHome();
     }
@@ -518,11 +596,24 @@ static void handleTouchTap(uint16_t x, uint16_t y)
     int sy = constrain(static_cast<int>(x), 0, 239);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
     if (screen == Screen::Home) {
-        if (sy < 22) return;
-        int col = constrain(sx / 107, 0, 2);
-        int row = constrain((sy - 22) / 110, 0, 1);
-        homeSel = row * 3 + col;
-        openTile(homeSel);
+        if (sy >= 190 && sy <= 236) {
+            int w = constrain(sx / 106, 0, 2);
+            homeSel = kWidgetFirst + w;
+            activateWidget(w);
+        } else if (sy >= 22 && sy < 186) {
+            int col = constrain(sx / 106, 0, 2);
+            int row = constrain((sy - 22) / 82, 0, 1);
+            homeSel = row * 3 + col;
+            openTile(homeSel);
+        }
+    } else if (screen == Screen::Settings) {
+        if (sy >= 40 && sy < 40 + kSettingsCount * 30) {
+            int i = constrain((sy - 40) / 30, 0, kSettingsCount - 1);
+            settingsSel = i;
+            activateSetting(i);
+        } else if (sy < 18) {
+            goHome();
+        }
     } else if (sy < 18) {
         goHome();
     }
@@ -607,6 +698,7 @@ void setup()
     pinMode(42, OUTPUT);       // backlight
     digitalWrite(42, HIGH);
     Wire.begin(18, 8);         // T-Deck I2C (keyboard)
+    WiFi.mode(WIFI_OFF);
     setupTrackball();
     setupTouch();
     lcd.init();
