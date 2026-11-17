@@ -198,13 +198,56 @@ static void handleLine(String cmd)
 }
 
 #ifdef MESHPORT_TDECK_SCREEN
-// On-device chat screen: public messages, typed with the T-Deck keyboard (I2C 0x55).
+// On-device UI: home screen with app tiles, public chat, nodes, settings, and themes.
+// Keys: w/a/s/d move, Enter opens or activates, q or Backspace (empty input) goes back.
 static LGFX_TDeck lcd;
 static std::vector<String> chatLines;
 static String inputBuf;
 static constexpr int kMaxLines = 12;
-static constexpr int kLineChars = 20;
+static constexpr int kLineChars = 24;
 static constexpr uint8_t kKeyboardAddr = 0x55;
+
+struct Theme {
+    const char *name;
+    uint16_t bg, fg, accent;
+};
+static const Theme kThemes[] = {
+    {"Dark", TFT_BLACK, TFT_WHITE, TFT_CYAN},
+    {"Light", TFT_WHITE, TFT_BLACK, TFT_BLUE},
+    {"Green", TFT_BLACK, TFT_GREEN, TFT_YELLOW},
+};
+static constexpr int kThemeCount = 3;
+static int themeIndex = 0;
+
+enum class Screen { Home, Public, Nodes, Settings, Soon };
+static Screen screen = Screen::Home;
+static int homeSel = 0;
+static int settingsSel = 0;
+static const char *kTiles[] = {"Public", "Contacts", "Nodes", "Spectrum", "Signal", "Settings"};
+static constexpr int kTileCount = 6;
+static const char *soonName = "";
+
+struct NodeEntry {
+    uint32_t id;
+    float rssi;
+    uint32_t lastMs;
+};
+static std::vector<NodeEntry> nodes;
+static constexpr size_t kMaxNodes = 16;
+
+static void noteNode(uint32_t id, float rssi)
+{
+    for (NodeEntry &n : nodes) {
+        if (n.id == id) {
+            n.rssi = rssi;
+            n.lastMs = millis();
+            return;
+        }
+    }
+    if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, millis()});
+}
+
+static const Theme &theme() { return kThemes[themeIndex]; }
 
 static void addLine(const String &s)
 {
@@ -212,42 +255,173 @@ static void addLine(const String &s)
     while (chatLines.size() > kMaxLines) chatLines.erase(chatLines.begin());
 }
 
-static void drawScreen()
+static void drawHeader(const String &title)
 {
-    lcd.fillScreen(TFT_BLACK);
-    lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    lcd.fillRect(0, 0, 320, 18, theme().accent);
+    lcd.setTextColor(theme().bg, theme().accent);
     lcd.setTextSize(2);
-    lcd.setCursor(0, 0);
-    char head[24];
-    snprintf(head, sizeof(head), "meshport %08lX", (unsigned long)myNode);
-    lcd.print(head);
+    lcd.setCursor(4, 1);
+    lcd.print(title);
+}
+
+static void drawHome()
+{
+    lcd.fillScreen(theme().bg);
+    char title[24];
+    snprintf(title, sizeof(title), "meshport %08lX", (unsigned long)myNode);
+    drawHeader(title);
+    for (int i = 0; i < kTileCount; i++) {
+        int col = i % 3, row = i / 3;
+        int x = col * 106 + 4, y = 22 + row * 110;
+        bool sel = (i == homeSel);
+        lcd.fillRect(x, y, 98, 102, sel ? theme().accent : theme().bg);
+        lcd.drawRect(x, y, 98, 102, theme().fg);
+        lcd.setTextColor(sel ? theme().bg : theme().fg, sel ? theme().accent : theme().bg);
+        lcd.setTextSize(2);
+        lcd.setCursor(x + 6, y + 42);
+        lcd.print(kTiles[i]);
+    }
+}
+
+static void drawPublic()
+{
+    lcd.fillScreen(theme().bg);
+    drawHeader("Public chat");
+    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextSize(2);
     for (size_t i = 0; i < chatLines.size(); i++) {
-        lcd.setCursor(0, 20 + static_cast<int>(i) * 16);
+        lcd.setCursor(0, 22 + static_cast<int>(i) * 16);
         lcd.print(chatLines[i]);
     }
-    lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    lcd.setTextColor(theme().accent, theme().bg);
     lcd.setCursor(0, 220);
     lcd.print("> ");
     lcd.print(inputBuf.substring(0, kLineChars - 2));
 }
 
+static void drawNodes()
+{
+    lcd.fillScreen(theme().bg);
+    char title[24];
+    snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
+    drawHeader(title);
+    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextSize(2);
+    uint32_t now = millis();
+    for (size_t i = 0; i < nodes.size(); i++) {
+        char line[32];
+        snprintf(line, sizeof(line), "%08lX %4.0fdBm %lus", (unsigned long)nodes[i].id, nodes[i].rssi,
+                 (unsigned long)((now - nodes[i].lastMs) / 1000));
+        lcd.setCursor(0, 22 + static_cast<int>(i) * 16);
+        lcd.print(line);
+    }
+    if (nodes.empty()) {
+        lcd.setCursor(0, 22);
+        lcd.print("No nodes heard yet");
+    }
+    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setCursor(0, 220);
+    lcd.print("q: back");
+}
+
+static void drawSettings()
+{
+    lcd.fillScreen(theme().bg);
+    drawHeader("Settings");
+    lcd.setTextSize(2);
+    char themeLine[32];
+    snprintf(themeLine, sizeof(themeLine), "Theme: %s", kThemes[themeIndex].name);
+    const char *items[2] = {themeLine, "Back"};
+    for (int i = 0; i < 2; i++) {
+        bool sel = (i == settingsSel);
+        lcd.setTextColor(sel ? theme().bg : theme().fg, sel ? theme().accent : theme().bg);
+        lcd.fillRect(0, 40 + i * 32, 320, 28, sel ? theme().accent : theme().bg);
+        lcd.setCursor(6, 46 + i * 32);
+        lcd.print(items[i]);
+    }
+    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setCursor(0, 220);
+    lcd.print("Enter: change  q: back");
+}
+
+static void drawSoon()
+{
+    lcd.fillScreen(theme().bg);
+    drawHeader(soonName);
+    lcd.setTextColor(theme().fg, theme().bg);
+    lcd.setTextSize(2);
+    lcd.setCursor(0, 60);
+    lcd.print("Coming in a later build");
+    lcd.setTextColor(theme().accent, theme().bg);
+    lcd.setCursor(0, 220);
+    lcd.print("q: back");
+}
+
+static void drawScreen()
+{
+    switch (screen) {
+    case Screen::Home: drawHome(); break;
+    case Screen::Public: drawPublic(); break;
+    case Screen::Nodes: drawNodes(); break;
+    case Screen::Settings: drawSettings(); break;
+    case Screen::Soon: drawSoon(); break;
+    }
+}
+
+static void goHome()
+{
+    screen = Screen::Home;
+}
+
+static void openTile(int i)
+{
+    switch (i) {
+    case 0: screen = Screen::Public; break;
+    case 2: screen = Screen::Nodes; break;
+    case 5: screen = Screen::Settings; settingsSel = 0; break;
+    default:
+        soonName = kTiles[i];
+        screen = Screen::Soon;
+        break;
+    }
+}
+
 static void handleKey(int c)
 {
     Serial.printf("key 0x%02X\n", c);
-    if (c == '\r' || c == '\n') {
-        if (inputBuf.length()) {
-            String text = inputBuf;
-            inputBuf = "";
-            if (sendPublic(text)) {
-                addLine("me: " + text);
-            } else {
-                addLine("! not sent, see USB log");
+    if (c == 27) {
+        goHome();
+    } else if (screen == Screen::Home) {
+        if (c == 'w') homeSel = (homeSel + kTileCount - 3) % kTileCount;
+        else if (c == 's') homeSel = (homeSel + 3) % kTileCount;
+        else if (c == 'a') homeSel = (homeSel + kTileCount - 1) % kTileCount;
+        else if (c == 'd') homeSel = (homeSel + 1) % kTileCount;
+        else if (c == '\r' || c == '\n') openTile(homeSel);
+    } else if (screen == Screen::Public) {
+        if (c == '\r' || c == '\n') {
+            if (inputBuf.length()) {
+                String text = inputBuf;
+                inputBuf = "";
+                if (sendPublic(text)) {
+                    addLine("me: " + text);
+                } else {
+                    addLine("! not sent, see USB log");
+                }
             }
+        } else if (c == 8 || c == 127) {
+            if (inputBuf.length()) inputBuf.remove(inputBuf.length() - 1);
+            else goHome();
+        } else if (c >= 32 && c < 127) {
+            inputBuf += static_cast<char>(c);
         }
-    } else if (c == 8 || c == 127) {
-        if (inputBuf.length()) inputBuf.remove(inputBuf.length() - 1);
-    } else if (c >= 32 && c < 127) {
-        inputBuf += static_cast<char>(c);
+    } else if (screen == Screen::Settings) {
+        if (c == 'w' || c == 's') settingsSel = 1 - settingsSel;
+        else if (c == '\r' || c == '\n') {
+            if (settingsSel == 0) themeIndex = (themeIndex + 1) % kThemeCount;
+            else goHome();
+        } else if (c == 'q' || c == 8 || c == 127) goHome();
+    } else {
+        if (c == 'q' || c == 8 || c == 127) goHome();
     }
     drawScreen();
 }
@@ -315,20 +489,7 @@ void setup()
     Wire.begin(18, 8);         // T-Deck I2C (keyboard)
     lcd.init();
     lcd.setRotation(1);
-    Serial.printf("screen %d x %d\n", (int)lcd.width(), (int)lcd.height());
-    lcd.fillScreen(TFT_BLACK);
-    lcd.setTextColor(TFT_YELLOW, TFT_BLACK);
-    lcd.setTextSize(2);
-    lcd.setCursor(0, 0);
-    lcd.print("TOP LEFT");
-    lcd.setCursor(lcd.width() - 16 * 9, 0);
-    lcd.print("TOP RIGHT");
-    lcd.setCursor(0, lcd.height() - 16);
-    lcd.print("BOTTOM LEFT");
-    lcd.setCursor(lcd.width() - 16 * 12, lcd.height() - 16);
-    lcd.print("BOTTOM RIGHT");
-    delay(3000);
-    addLine("type a message, Enter sends");
+    addLine("Enter on a tile to open it");
     drawScreen();
 #endif
 }
@@ -354,6 +515,14 @@ void loop()
 #endif
 
     if (driver->poll(rx, rssi, snr)) {
+#ifdef MESHPORT_TDECK_SCREEN
+        if (rx.size() >= 16) {
+            Header seen = unpackHeader(rx.data());
+            if (seen.from != myNode) {
+                noteNode(seen.from, rssi);
+            }
+        }
+#endif
         // Debug: every frame heard, decodable or not.
         if (rx.size() >= 16) {
             Header dbg = unpackHeader(rx.data());
