@@ -437,6 +437,41 @@ static void pollKeyboard()
         if (c > 0) handleKey(c);
     }
 }
+
+// Trackball switches (T-Deck). The pin map is unverified: each press is logged with its pin
+// so a swapped direction shows up on the USB console.
+struct TrackPin {
+    int pin;
+    int key;
+    bool lastHigh;
+    uint32_t lastMs;
+};
+static TrackPin trackPins[] = {
+    {3, 'w', true, 0},   // up
+    {15, 's', true, 0},  // down
+    {1, 'a', true, 0},   // left
+    {2, 'd', true, 0},   // right
+    {0, 13, true, 0},    // center press (BOOT), acts as Enter
+};
+
+static void setupTrackball()
+{
+    for (TrackPin &t : trackPins) pinMode(t.pin, INPUT_PULLUP);
+}
+
+static void pollTrackball()
+{
+    uint32_t now = millis();
+    for (TrackPin &t : trackPins) {
+        bool high = digitalRead(t.pin) != 0;
+        if (!high && t.lastHigh && now - t.lastMs > 150) {
+            t.lastMs = now;
+            Serial.printf("trackball pin %d -> key 0x%02X\n", t.pin, t.key);
+            handleKey(t.key);
+        }
+        t.lastHigh = high;
+    }
+}
 #endif
 
 void setup()
@@ -487,6 +522,7 @@ void setup()
     pinMode(42, OUTPUT);       // backlight
     digitalWrite(42, HIGH);
     Wire.begin(18, 8);         // T-Deck I2C (keyboard)
+    setupTrackball();
     lcd.init();
     lcd.setRotation(1);
     addLine("Enter on a tile to open it");
@@ -512,6 +548,7 @@ void loop()
     float rssi = 0, snr = 0;
 #ifdef MESHPORT_TDECK_SCREEN
     pollKeyboard();
+    pollTrackball();
 #endif
 
     if (driver->poll(rx, rssi, snr)) {
