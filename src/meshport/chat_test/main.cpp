@@ -35,6 +35,7 @@
 #include "TDeckScreen.h"
 #include <WiFi.h>
 #include <Preferences.h>
+#include <BLEDevice.h>
 #include <SD.h>
 #include <time.h>
 #endif
@@ -248,7 +249,7 @@ static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
                     SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map,
-                    SettingsWifi, WifiPassword, AppGrid, Contacts };
+                    SettingsWifi, WifiPassword, AppGrid, Contacts, SettingsBluetooth };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -517,10 +518,41 @@ static void toggleWifi()
     Serial.printf("wifi %s\n", wifiOn ? "on" : "off");
 }
 
+static bool bleRunning = false;
+
+// The name the device advertises over Bluetooth, from its chip ID so each unit differs.
+static const char *btName()
+{
+    static char buf[24];
+    uint64_t mac = ESP.getEfuseMac();
+    snprintf(buf, sizeof(buf), "MeshPort-%04X", static_cast<unsigned>(mac & 0xFFFF));
+    return buf;
+}
+
+static void startBle()
+{
+    if (bleRunning) return;
+    BLEDevice::init(btName());
+    BLEDevice::getAdvertising()->start();
+    bleRunning = true;
+}
+
+static void stopBle()
+{
+    if (!bleRunning) return;
+    BLEDevice::deinit(true);
+    bleRunning = false;
+}
+
+static void saveSettings();
+
 static void toggleBt()
 {
     btOn = !btOn;
-    Serial.printf("bluetooth %s (radio stack not wired yet)\n", btOn ? "on" : "off");
+    if (btOn) startBle();
+    else stopBle();
+    saveSettings();
+    Serial.printf("bluetooth %s\n", btOn ? "on" : "off");
 }
 
 static void toggleGps()
@@ -694,6 +726,7 @@ static void loadSettings()
     themeIndex = p.getInt("theme", themeIndex);
     bgIndex = p.getInt("bg", bgIndex);
     gpsOn = p.getBool("gpsOn", gpsOn);
+    btOn = p.getBool("btOn", btOn);
     wifiSsid = p.getString("wifiSsid", "");
     wifiPass = p.getString("wifiPass", "");
     wifiOn = p.getBool("wifiOn", wifiOn);
@@ -728,6 +761,7 @@ static void saveSettings()
     p.putInt("theme", themeIndex);
     p.putInt("bg", bgIndex);
     p.putBool("gpsOn", gpsOn);
+    p.putBool("btOn", btOn);
     {
         String ord;
         for (int i = 0; i < appCount; i++) ord += static_cast<char>('0' + appOrder[i]);
@@ -1691,7 +1725,8 @@ static void drawContactList()
 static bool isSettingsScreen(Screen s)
 {
     return s == Screen::Settings || s == Screen::SettingsDevice || s == Screen::SettingsLora ||
-           s == Screen::SettingsGps || s == Screen::SettingsDisplay || s == Screen::SettingsWifi;
+           s == Screen::SettingsGps || s == Screen::SettingsDisplay || s == Screen::SettingsWifi ||
+           s == Screen::SettingsBluetooth;
 }
 
 static int buildSettingItems(Screen s, char items[][40])
@@ -1703,9 +1738,15 @@ static int buildSettingItems(Screen s, char items[][40])
         snprintf(items[2], 40, "GPS Receiver");
         snprintf(items[3], 40, "Display & Theme");
         snprintf(items[4], 40, "WiFi Network");
-        snprintf(items[5], 40, "Calibrate Touchscreen");
-        snprintf(items[6], 40, "Back to Home");
-        return 7;
+        snprintf(items[5], 40, "Bluetooth");
+        snprintf(items[6], 40, "Calibrate Touchscreen");
+        snprintf(items[7], 40, "Back to Home");
+        return 8;
+    case Screen::SettingsBluetooth:
+        snprintf(items[0], 40, "Status: %s", btOn ? "On" : "Off");
+        snprintf(items[1], 40, "Device name: %s", btName());
+        snprintf(items[2], 40, "Back");
+        return 3;
     case Screen::SettingsWifi: {
         snprintf(items[0], 40, "Status: %s", wifiStatusText().c_str());
         int n = 1;
@@ -1762,6 +1803,7 @@ static void drawSettingsScreen(Screen s)
     case Screen::SettingsGps:     title = "GPS Receiver"; break;
     case Screen::SettingsDisplay: title = "Display & Theme"; break;
     case Screen::SettingsWifi:    title = "WiFi Network"; break;
+    case Screen::SettingsBluetooth: title = "Bluetooth"; break;
     default: break;
     }
     drawHeader(title);
@@ -1975,6 +2017,7 @@ static void drawScreen()
     case Screen::SettingsGps:
     case Screen::SettingsDisplay:
     case Screen::SettingsWifi: drawSettingsScreen(screen); break;
+    case Screen::SettingsBluetooth: drawSettingsScreen(screen); break;
     case Screen::WifiPassword: drawWifiPassword(); break;
     case Screen::AppGrid: drawAppGrid(); break;
     case Screen::Contacts: drawContactList(); break;
@@ -2054,8 +2097,13 @@ static void activateSettingItem(Screen s, int i)
         else if (i == 2) screen = Screen::SettingsGps;
         else if (i == 3) screen = Screen::SettingsDisplay;
         else if (i == 4) { screen = Screen::SettingsWifi; settingsSel = 0; }
-        else if (i == 5) { calStep = 0; screen = Screen::Calibrate; }
+        else if (i == 5) { screen = Screen::SettingsBluetooth; settingsSel = 0; }
+        else if (i == 6) { calStep = 0; screen = Screen::Calibrate; }
         else goHome();
+        break;
+    case Screen::SettingsBluetooth:
+        if (i == 0) toggleBt();
+        else if (i == 2) { screen = Screen::Settings; settingsSel = 0; }
         break;
     case Screen::SettingsWifi: {
         int networkRows = wifiFound;
@@ -2613,6 +2661,7 @@ void setup()
 #ifdef MESHPORT_TDECK_SCREEN
     loadSettings();
     loadContacts();
+    if (btOn) startBle();
 #endif
     pinMode(CHAT_POWER_PIN, OUTPUT);
     digitalWrite(CHAT_POWER_PIN, CHAT_POWER_ON);
