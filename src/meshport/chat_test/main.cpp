@@ -225,6 +225,7 @@ static LGFX_Sprite canvas(&lcd);
 static std::vector<String> chatLines;
 static std::vector<uint32_t> chatSeq;   // message number for each chat line
 static uint32_t msgSeq = 0;
+static int unreadChat = 0;              // incoming messages not yet seen on the Chat screen
 static String inputBuf;
 static constexpr int kMaxLines = 12;
 static constexpr int kLineChars = 36;
@@ -368,7 +369,8 @@ static void toggleBt()
 static void toggleGps()
 {
     gpsOn = !gpsOn;
-    Serial.printf("gps %s (GPS pins not wired yet)\n", gpsOn ? "on" : "off");
+    if (!gpsOn) gpsSats = 0;
+    Serial.printf("gps %s\n", gpsOn ? "on" : "off");
 }
 
 static void addLine(const String &s)
@@ -549,6 +551,89 @@ static void saveSettings()
     p.putInt("bg", bgIndex);
     p.putBool("gpsOn", gpsOn);
     p.end();
+}
+
+// --- GPS receiver: NMEA over UART (satellites, altitude, and time) ----------
+// Pins follow the T-Deck Plus GPS module (RX 43, TX 44, 38400 baud). If no
+// sentences arrive, the RX and TX pins may need swapping.
+static constexpr int kGpsRxPin = 43;
+static constexpr int kGpsTxPin = 44;
+static constexpr int kUtcOffsetHours = -5;   // Eastern time; change for another zone
+static HardwareSerial gpsSerial(1);
+static bool gpsStarted = false;
+static float gpsAltM = 0;
+static char gpsLine[120];
+static size_t gpsLen = 0;
+
+static int nmeaSplit(char *s, char *fields[], int maxFields)
+{
+    int n = 0;
+    fields[n++] = s;
+    for (char *p = s; *p && n < maxFields; p++) {
+        if (*p == ',') {
+            *p = '\0';
+            fields[n++] = p + 1;
+        }
+    }
+    return n;
+}
+
+static void parseNmea(char *s)
+{
+    if (s[0] != '$') return;
+    char *star = strchr(s, '*');
+    if (star) *star = '\0';
+    char *f[16];
+    int n = nmeaSplit(s + 1, f, 16);
+    if (n < 10 || strlen(f[0]) < 5) return;
+    const char *kind = f[0] + 2;   // RMC or GGA, whatever the talker prefix
+
+    if (strcmp(kind, "RMC") == 0 && f[2][0] == 'A' && strlen(f[1]) >= 6) {
+        int utcHour = (f[1][0] - '0') * 10 + (f[1][1] - '0');
+        int utcMin = (f[1][2] - '0') * 10 + (f[1][3] - '0');
+        int localMin = ((utcHour * 60 + utcMin + kUtcOffsetHours * 60) % 1440 + 1440) % 1440;
+        setClock(localMin / 60, localMin % 60);
+    } else if (strcmp(kind, "GGA") == 0) {
+        int fix = atoi(f[6]);
+        gpsSats = fix > 0 ? atoi(f[7]) : 0;
+        gpsAltM = atof(f[9]);
+    }
+}
+
+static void pollGps()
+{
+    if (!gpsOn) return;
+    if (!gpsStarted) {
+        gpsSerial.begin(38400, SERIAL_8N1, kGpsRxPin, kGpsTxPin);
+        gpsStarted = true;
+    }
+    while (gpsSerial.available()) {
+        char c = static_cast<char>(gpsSerial.read());
+        if (c == '\n' || c == '\r') {
+            if (gpsLen > 0) {
+                gpsLine[gpsLen] = '\0';
+                parseNmea(gpsLine);
+                gpsLen = 0;
+            }
+        } else if (gpsLen < sizeof(gpsLine) - 1) {
+            gpsLine[gpsLen++] = c;
+        } else {
+            gpsLen = 0;
+        }
+    }
+}
+
+// Round badge with a count, drawn on a tile corner.
+static void drawBadge(int cx, int cy, int count)
+{
+    char buf[4];
+    if (count > 9) snprintf(buf, sizeof(buf), "9+");
+    else snprintf(buf, sizeof(buf), "%d", count);
+    const uint16_t red = 0xF800;
+    canvas.fillCircle(cx, cy, 8, red);
+    useFontSmall();
+    centerText(cx, cy - 4, buf, TFT_WHITE, red);
+    useFont();
 }
 
 // --- Crisp Vector Primitives ------------------------------------------------
@@ -783,6 +868,7 @@ static void drawHome()
         }
         useFont();
         centerText(cx, 204, kShort[i], sel ? theme().accent : theme().fg, glassBase());
+        if (i == 0 && unreadChat > 0) drawBadge(cx + 17, cy - 17, unreadChat);
     }
 }
 
@@ -909,7 +995,8 @@ static int buildSettingItems(Screen s, char items[][40])
     case Screen::SettingsGps:
         snprintf(items[0], 40, "GPS Power: %s", gpsOn ? "ON" : "OFF");
         snprintf(items[1], 40, "Update Interval: %s", kGpsIntervals[gpsIntervalIdx]);
-        snprintf(items[2], 40, "Fix Status: No Fix");
+        if (gpsSats > 0) snprintf(items[2], 40, "Fix: %d sats, %.0f m", gpsSats, gpsAltM);
+        else snprintf(items[2], 40, "Fix: no fix");
         snprintf(items[3], 40, "Back");
         return 4;
     case Screen::SettingsDisplay:
@@ -1153,7 +1240,7 @@ static void goHome()
 static void openTile(int i)
 {
     switch (i) {
-    case 0: screen = Screen::Public; break;
+    case 0: screen = Screen::Public; unreadChat = 0; break;
     case 2: screen = Screen::Nodes; break;
     case 5: screen = Screen::Settings; settingsSel = 0; break;
     case 3:
@@ -1675,6 +1762,7 @@ void loop()
     pollKeyboard();
     pollTrackball();
     pollTouch();
+    pollGps();
     if (screen == Screen::Spectrum && specLive && millis() - specSweepMs > 150) {
         sweepSpectrum();
         drawScreen();
@@ -1743,6 +1831,7 @@ void loop()
                 char who[12];
                 snprintf(who, sizeof(who), "%08lX", (unsigned long)h.from);
                 addLine(String(who) + ": " + String(body.c_str()));
+                if (screen != Screen::Public) unreadChat++;
                 drawScreen();
 #endif
             }
