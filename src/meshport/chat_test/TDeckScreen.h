@@ -35,7 +35,7 @@ public:
             cfg.memory_height = 320;
             // Measured on device: the right-side labels stop about 5 mm (~28 px) short of the edge.
             cfg.offset_x = 0;
-            cfg.offset_y = 28;
+            cfg.offset_y = 0;
             cfg.readable = false;
             cfg.invert = true;
             cfg.rgb_order = false;
