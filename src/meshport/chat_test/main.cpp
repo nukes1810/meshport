@@ -700,14 +700,29 @@ static void activateSetting(int i)
 
 static void activateWidget(int i)
 {
+    // Widget order on screen is WiFi, GPS, BT.
     if (i == 0) toggleWifi();
-    else if (i == 1) toggleBt();
-    else toggleGps();
+    else if (i == 1) toggleGps();
+    else toggleBt();
 }
 
 static void handleKey(int c)
 {
     Serial.printf("key 0x%02X\n", c);
+    // Trackball codes 0x80-0x84 (up, down, left, right, center).
+    const bool track = (c >= 0x80 && c <= 0x84);
+    if (track && screen == Screen::Public) {
+        // Trackball never types into the chat: left leaves, center sends or leaves when empty.
+        if (c == 0x80 || c == 0x81 || c == 0x83) return;
+        if (c == 0x82 || (c == 0x84 && inputBuf.length() == 0)) {
+            goHome();
+            drawScreen();
+            return;
+        }
+        c = '\r';
+    } else if (track) {
+        c = (c == 0x80) ? 'w' : (c == 0x81) ? 's' : (c == 0x82) ? 'a' : (c == 0x83) ? 'd' : '\r';
+    }
     if (c == 27) {
         goHome();
     } else if (screen == Screen::Home) {
@@ -774,11 +789,11 @@ struct TrackPin {
     uint32_t lastMs;
 };
 static TrackPin trackPins[] = {
-    {3, 'w', true, 0},   // up
-    {15, 's', true, 0},  // down
-    {1, 'a', true, 0},   // left
-    {2, 'd', true, 0},   // right
-    {0, 13, true, 0},    // center press (BOOT), acts as Enter
+    {3, 0x80, true, 0},   // up
+    {15, 0x81, true, 0},  // down
+    {1, 0x82, true, 0},   // left
+    {2, 0x83, true, 0},   // right
+    {0, 0x84, true, 0},   // center press (BOOT), acts as Enter
 };
 
 static void setupTrackball()
