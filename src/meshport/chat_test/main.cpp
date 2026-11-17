@@ -118,6 +118,14 @@ static void handleLine(String cmd)
         Serial.println("id | peer <hex> | send <text> | help");
     } else if (cmd == "id") {
         showId();
+    } else if (cmd == "diag") {
+        uint8_t t1[32], t2[32], k[32];
+        Serial.printf("x25519 public: %s\n", x25519PublicKey(me.priv, t1) ? "ok" : "FAIL");
+        Serial.printf("x25519 shared: %s\n", x25519SharedSecret(me.priv, me.pub, t2) ? "ok" : "FAIL");
+        Serial.printf("hkdf derive:   %s\n", deriveDirectKey(me.priv, me.pub, k) ? "ok" : "FAIL");
+        std::vector<uint8_t> ct;
+        uint8_t dummy[4] = {1, 2, 3, 4};
+        Serial.printf("seal:          %s\n", sealDirect(k, 1, nullptr, 0, dummy, 4, ct) ? "ok" : "FAIL");
     } else if (cmd.startsWith("peer ")) {
         if (parseHex(cmd.substring(5), peerPub, 32)) {
             havePeer = true;
