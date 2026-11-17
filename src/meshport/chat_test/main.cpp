@@ -267,6 +267,13 @@ static void pushRssi(float rssi)
     if (rssiHist.size() > kSignalSamples) rssiHist.erase(rssiHist.begin());
 }
 
+static float clampF(float v, float lo, float hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
+}
+
 static void sweepSpectrum()
 {
     for (int i = 0; i < kSpecPoints; i++) {
@@ -507,7 +514,7 @@ static void drawSpectrum()
         lcd.print("Press Enter to scan");
     } else {
         for (int i = 0; i < kSpecPoints; i++) {
-            float level = constrain(specDb[i], -120.0f, -50.0f);
+            float level = clampF(specDb[i], -120.0f, -50.0f);
             int h = static_cast<int>((level + 120.0f) / 70.0f * 170.0f);
             int x = 4 + i * 6;
             lcd.fillRect(x, 220 - h, 5, h, theme().accent);
@@ -527,7 +534,7 @@ static void drawSignal()
     lcd.drawLine(0, 220, 319, 220, theme().fg);
     for (size_t i = 1; i < rssiHist.size(); i++) {
         auto yOf = [](float r) {
-            float v = constrain(r, -130.0f, -40.0f);
+            float v = clampF(r, -130.0f, -40.0f);
             return static_cast<int>(220 - (v + 130.0f) / 90.0f * 190.0f);
         };
         int x0 = static_cast<int>((i - 1) * 5), x1 = static_cast<int>(i * 5);
