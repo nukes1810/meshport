@@ -513,9 +513,9 @@ static void setupTouch()
 
 static void handleTouchTap(uint16_t x, uint16_t y)
 {
-    // Landscape mapping: screen x follows the touch y axis, screen y is inverted touch x.
-    int sx = constrain(static_cast<int>(y), 0, 319);
-    int sy = constrain(239 - static_cast<int>(x), 0, 239);
+    // Touch is in portrait (240 wide, 320 tall). The landscape screen is that rotated 90 degrees clockwise.
+    int sx = constrain(319 - static_cast<int>(y), 0, 319);
+    int sy = constrain(static_cast<int>(x), 0, 239);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
     if (screen == Screen::Home) {
         if (sy < 22) return;
@@ -543,8 +543,9 @@ static void pollTouch()
     if (points > 0) {
         uint8_t p[8];
         if (gt911Read(0x8150, p, 8) && !wasDown) {
-            uint16_t x = p[1] | (p[2] << 8);
-            uint16_t y = p[3] | (p[4] << 8);
+            // Measured layout: X low/high at bytes 0-1, Y low/high at bytes 2-3, size at byte 4.
+            uint16_t x = p[0] | (p[1] << 8);
+            uint16_t y = p[2] | (p[3] << 8);
             Serial.printf("touch bytes %02X %02X %02X %02X %02X %02X %02X %02X\n", p[0], p[1], p[2], p[3],
                           p[4], p[5], p[6], p[7]);
             Serial.printf("touch raw x=%u y=%u\n", x, y);
