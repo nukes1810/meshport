@@ -4,6 +4,7 @@
 
 #include "psa/crypto.h"
 #include "mbedtls/md.h"
+#include "mbedtls/chachapoly.h"
 
 #include <cstring>
 #include <vector>
@@ -99,54 +100,38 @@ bool hkdfSha256(const uint8_t *ikm, size_t ikmLen, const uint8_t *salt, size_t s
     return true;
 }
 
-namespace {
-
-bool importChacha(const uint8_t key[32], psa_key_id_t &id)
-{
-    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
-    psa_set_key_type(&attr, PSA_KEY_TYPE_CHACHA20);
-    psa_set_key_bits(&attr, 256);
-    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_ENCRYPT | PSA_KEY_USAGE_DECRYPT);
-    psa_set_key_algorithm(&attr, PSA_ALG_CHACHA20_POLY1305);
-    return psa_import_key(&attr, key, 32, &id) == PSA_SUCCESS;
-}
-
-} // namespace
-
+// ChaCha20-Poly1305 via the mbedtls chachapoly API. PSA AEAD was not used because
+// the device PSA build does not provide it.
 bool chachaPolySeal(const uint8_t key[32], const uint8_t nonce[12], const uint8_t *aad, size_t aadLen,
                     uint8_t *data, size_t len, uint8_t tag[16])
 {
-    if (!psaReady()) return false;
-    psa_key_id_t id = PSA_KEY_ID_NULL;
-    if (!importChacha(key, id)) return false;
-    std::vector<uint8_t> out(len + 16);
-    size_t outLen = 0;
-    psa_status_t st = psa_aead_encrypt(id, PSA_ALG_CHACHA20_POLY1305, nonce, 12, aad, aadLen, data, len,
-                                       out.data(), out.size(), &outLen);
-    psa_destroy_key(id);
-    if (st != PSA_SUCCESS || outLen != len + 16) return false;
-    for (size_t i = 0; i < len; i++) data[i] = out[i];
-    for (size_t i = 0; i < 16; i++) tag[i] = out[len + i];
-    return true;
+    mbedtls_chachapoly_context ctx;
+    mbedtls_chachapoly_init(&ctx);
+    bool ok = false;
+    std::vector<uint8_t> out(len > 0 ? len : 1);
+    if (mbedtls_chachapoly_setkey(&ctx, key) == 0 &&
+        mbedtls_chachapoly_encrypt_and_tag(&ctx, len, nonce, aad, aadLen, data, out.data(), tag) == 0) {
+        for (size_t i = 0; i < len; i++) data[i] = out[i];
+        ok = true;
+    }
+    mbedtls_chachapoly_free(&ctx);
+    return ok;
 }
 
 bool chachaPolyOpen(const uint8_t key[32], const uint8_t nonce[12], const uint8_t *aad, size_t aadLen,
                     uint8_t *data, size_t len, const uint8_t tag[16])
 {
-    if (!psaReady()) return false;
-    psa_key_id_t id = PSA_KEY_ID_NULL;
-    if (!importChacha(key, id)) return false;
-    std::vector<uint8_t> in(len + 16);
-    for (size_t i = 0; i < len; i++) in[i] = data[i];
-    for (size_t i = 0; i < 16; i++) in[len + i] = tag[i];
+    mbedtls_chachapoly_context ctx;
+    mbedtls_chachapoly_init(&ctx);
+    bool ok = false;
     std::vector<uint8_t> out(len > 0 ? len : 1);
-    size_t outLen = 0;
-    psa_status_t st = psa_aead_decrypt(id, PSA_ALG_CHACHA20_POLY1305, nonce, 12, aad, aadLen, in.data(), in.size(),
-                                       out.data(), out.size(), &outLen);
-    psa_destroy_key(id);
-    if (st != PSA_SUCCESS || outLen != len) return false;
-    for (size_t i = 0; i < len; i++) data[i] = out[i];
-    return true;
+    if (mbedtls_chachapoly_setkey(&ctx, key) == 0 &&
+        mbedtls_chachapoly_auth_decrypt(&ctx, len, nonce, aad, aadLen, tag, data, out.data()) == 0) {
+        for (size_t i = 0; i < len; i++) data[i] = out[i];
+        ok = true;
+    }
+    mbedtls_chachapoly_free(&ctx);
+    return ok;
 }
 
 } // namespace meshport
