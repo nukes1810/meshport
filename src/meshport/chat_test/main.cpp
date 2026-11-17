@@ -473,10 +473,18 @@ static void drawPanel(int x, int y, int w, int h)
     glassCard(x, y, w, h, 10, false);
 }
 
+// Glossy highlight: a lighter band across the top of a control. Only use where no text
+// sits on the same area, because text backgrounds would show as a box against the band.
+static void glossTop(int x, int y, int w, int hBand, int r, uint16_t base)
+{
+    canvas.fillRoundRect(x, y, w, hBand, r, mix(base, TFT_WHITE, 48));
+}
+
 static void drawToggle(int x, int y, bool on)
 {
     uint16_t track = on ? theme().accent : (isLightTheme() ? 0xC618 : kTrackOff);
     canvas.fillRoundRect(x, y, 36, 18, 9, track);
+    glossTop(x + 4, y + 2, 28, 6, 3, track);
     if (!on) {
         canvas.drawRoundRect(x, y, 36, 18, 9, mix(theme().fg, track, 190));
     }
@@ -672,17 +680,11 @@ static void drawHome()
 
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
     const int pillX[3] = {190, 226, 278};
-    const int pillW[3] = {32, 48, 28};
-    for (int i = 0; i < 3; i++) {
-        uint16_t col = linkOn[i] ? kOnBlue : kOffGrey;
-        uint16_t pFill = linkOn[i] ? mix(kOnBlue, strip, 210) : strip;
-        canvas.fillRoundRect(pillX[i], 3, pillW[i], 16, 8, pFill);
-        canvas.drawRoundRect(pillX[i], 3, pillW[i], 16, 8, col);
-    }
-    drawWifi(pillX[0] + 16, 14, linkOn[0] ? kOnBlue : kOffGrey, false);
-    drawGpsIcon(pillX[1] + 12, 11, linkOn[1] ? kOnBlue : kOffGrey, linkOn[1], frame);
+    // Icons sit directly on the status bar, with no outline pills around them.
+    drawWifi(pillX[0] + 16, 12, linkOn[0] ? kOnBlue : kOffGrey, false);
+    drawGpsIcon(pillX[1] + 8, 11, linkOn[1] ? kOnBlue : kOffGrey, linkOn[1], frame);
     useFontSmall();
-    putText(pillX[1] + 24, 7, "GPS", linkOn[1] ? kOnBlue : kOffGrey, linkOn[1] ? mix(kOnBlue, strip, 210) : strip);
+    putText(pillX[1] + 20, 7, "GPS", linkOn[1] ? kOnBlue : kOffGrey, strip);
     drawBtBubble(pillX[2] + 14, 11, linkOn[2]);
     canvas.drawFastHLine(0, 23, 320, mix(theme().accent, bgColor(), 140));
 
@@ -757,18 +759,18 @@ static void drawHome()
     drawPanel(6, 136, 308, 96);
     useFontSmall();
     putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
-    putText(224, 143, "TRACKBALL / TAP", mutedText(), glassBase());
-
     static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Setup"};
     for (int i = 0; i < kTileCount; i++) {
         int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
         if (sel) {
             canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, theme().accent);
+            glossTop(cx - 17, cy - 18, 34, 10, 7, theme().accent);
             drawAppIcon(i, cx, cy, isLightTheme() ? TFT_WHITE : bgColor(), theme().accent);
         } else {
             uint16_t tileBg = subCardBase();
             canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, tileBg);
+            glossTop(cx - 17, cy - 18, 34, 10, 7, tileBg);
             canvas.drawRoundRect(cx - 20, cy - 20, 40, 40, 11, mix(theme().accent, tileBg, 165));
             drawAppIcon(i, cx, cy, theme().accent, tileBg);
         }
