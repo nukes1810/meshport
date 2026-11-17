@@ -1,10 +1,10 @@
 // Device backend for SecureDirect using the PSA Crypto API (Mbed TLS, bundled with ESP-IDF).
 // Not compiled on the host. Untested until the device build and device test run.
 #include "SecureDirect.h"
+#include "ChaChaPoly.h"
 
 #include "psa/crypto.h"
 #include "mbedtls/md.h"
-#include "mbedtls/chachapoly.h"
 
 #include <cstring>
 #include <vector>
@@ -100,38 +100,16 @@ bool hkdfSha256(const uint8_t *ikm, size_t ikmLen, const uint8_t *salt, size_t s
     return true;
 }
 
-// ChaCha20-Poly1305 via the mbedtls chachapoly API. PSA AEAD was not used because
-// the device PSA build does not provide it.
 bool chachaPolySeal(const uint8_t key[32], const uint8_t nonce[12], const uint8_t *aad, size_t aadLen,
                     uint8_t *data, size_t len, uint8_t tag[16])
 {
-    mbedtls_chachapoly_context ctx;
-    mbedtls_chachapoly_init(&ctx);
-    bool ok = false;
-    std::vector<uint8_t> out(len > 0 ? len : 1);
-    if (mbedtls_chachapoly_setkey(&ctx, key) == 0 &&
-        mbedtls_chachapoly_encrypt_and_tag(&ctx, len, nonce, aad, aadLen, data, out.data(), tag) == 0) {
-        for (size_t i = 0; i < len; i++) data[i] = out[i];
-        ok = true;
-    }
-    mbedtls_chachapoly_free(&ctx);
-    return ok;
+    return chachaPolyEncrypt(key, nonce, aad, aadLen, data, len, tag);
 }
 
 bool chachaPolyOpen(const uint8_t key[32], const uint8_t nonce[12], const uint8_t *aad, size_t aadLen,
                     uint8_t *data, size_t len, const uint8_t tag[16])
 {
-    mbedtls_chachapoly_context ctx;
-    mbedtls_chachapoly_init(&ctx);
-    bool ok = false;
-    std::vector<uint8_t> out(len > 0 ? len : 1);
-    if (mbedtls_chachapoly_setkey(&ctx, key) == 0 &&
-        mbedtls_chachapoly_auth_decrypt(&ctx, len, nonce, aad, aadLen, tag, data, out.data()) == 0) {
-        for (size_t i = 0; i < len; i++) data[i] = out[i];
-        ok = true;
-    }
-    mbedtls_chachapoly_free(&ctx);
-    return ok;
+    return chachaPolyDecrypt(key, nonce, aad, aadLen, data, len, tag);
 }
 
 } // namespace meshport

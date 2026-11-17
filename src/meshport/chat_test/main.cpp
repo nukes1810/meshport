@@ -23,6 +23,7 @@
 #include "../MeshtasticChannelPlan.cpp"
 #include "../MeshtasticRadio.cpp"
 #include "../SecureDirect.cpp"
+#include "../ChaChaPoly.cpp"
 #include "../SecureBackend_psa.cpp"
 #include "../DirectMessage.cpp"
 #include "../DeviceIdentity.cpp"
