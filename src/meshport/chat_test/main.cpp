@@ -272,11 +272,22 @@ static void noteNode(uint32_t id, float rssi)
 
 static const Theme &theme() { return kThemes[themeIndex]; }
 
-// Spectrum and signal analyzers.
+// Spectrum analyzer and signal analyzer.
 static float loraFreqMHz = 906.875f;
-static constexpr int kSpecPoints = 52;   // 902.0 MHz to 927.5 MHz in 0.5 MHz steps
+static constexpr int kSpecPoints = 104;      // 902.00 to 927.75 MHz
+static constexpr float kSpecStartMHz = 902.0f;
+static constexpr float kSpecStepMHz = 0.25f;
+static constexpr int kSpecDbMin = -130;      // plot and color range
+static constexpr int kSpecDbMax = -90;
+static constexpr int kWfRows = 33;           // waterfall history, 2 px per row
 static int specDb[kSpecPoints];
+static uint8_t wfRows[kWfRows][kSpecPoints]; // palette index per sweep and point
+static int wfHead = 0;                       // next row to write
 static bool specScanned = false;
+static bool specLive = true;                 // re-sweep continuously while the screen is open
+static uint32_t specSweepMs = 0;
+static uint16_t specPalette[256];
+static bool specPaletteReady = false;
 static constexpr size_t kSignalSamples = 60;
 static std::vector<float> rssiHist;
 static float lastSnr = 0;
@@ -287,19 +298,43 @@ static void pushRssi(float rssi)
     if (rssiHist.size() > kSignalSamples) rssiHist.erase(rssiHist.begin());
 }
 
+// Heat palette for the waterfall: blue (quiet), cyan, green, yellow, red (loud).
+static void buildSpecPalette()
+{
+    static const int kStops[5][3] = {{0, 0, 255}, {0, 255, 255}, {0, 255, 0}, {255, 255, 0}, {255, 0, 0}};
+    for (int i = 0; i < 256; i++) {
+        int seg = i * 4 / 256;
+        int t = i * 4 - seg * 256;
+        int c[3];
+        for (int k = 0; k < 3; k++) {
+            c[k] = kStops[seg][k] + (kStops[seg + 1][k] - kStops[seg][k]) * t / 255;
+        }
+        specPalette[i] = static_cast<uint16_t>(((c[0] >> 3) << 11) | ((c[1] >> 2) << 5) | (c[2] >> 3));
+    }
+    specPaletteReady = true;
+}
+
+// Palette index for a dBm reading, clamped to the plot range.
+static int specLevelIndex(int db)
+{
+    return constrain((constrain(db, kSpecDbMin, kSpecDbMax) - kSpecDbMin) * 255 / (kSpecDbMax - kSpecDbMin), 0, 255);
+}
+
+// One sweep across the band: tune, read RSSI, retune to LoRa, and push a waterfall row.
 static void sweepSpectrum()
 {
     for (int i = 0; i < kSpecPoints; i++) {
-        float f = 902.0f + 0.5f * i;
-        radio->setFrequency(f);
+        radio->setFrequency(kSpecStartMHz + kSpecStepMHz * i);
         radio->startReceive();
         delayMicroseconds(3000);
-        specDb[i] = static_cast<int>(radio->getRSSI());
+        specDb[i] = constrain(static_cast<int>(radio->getRSSI()), -140, -40);
     }
     radio->setFrequency(loraFreqMHz);
     radio->startReceive();
+    for (int i = 0; i < kSpecPoints; i++) wfRows[wfHead][i] = static_cast<uint8_t>(specLevelIndex(specDb[i]));
+    wfHead = (wfHead + 1) % kWfRows;
     specScanned = true;
-    Serial.println("spectrum sweep done");
+    specSweepMs = millis();
 }
 
 static const uint16_t kBackgrounds[] = {0, TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
@@ -864,33 +899,91 @@ static int signalY(float rssi)
     return 186 - (v + 130) * 160 / 90;
 }
 
+// Plot geometry: trace on top, waterfall below, shared x axis from x 40 to 311.
+static constexpr int kPlotX = 40;
+static constexpr int kPlotW = 272;
+static constexpr int kTraceTop = 50;
+static constexpr int kTraceBot = 114;
+static constexpr int kWfTop = 122;
+static constexpr uint16_t kPeakYellow = 0xFFE0;
+
+static int traceX(int i) { return kPlotX + i * (kPlotW - 1) / (kSpecPoints - 1); }
+
+static int traceY(int db)
+{
+    int v = constrain(db, kSpecDbMin, kSpecDbMax);
+    return kTraceBot - (v - kSpecDbMin) * (kTraceBot - kTraceTop) / (kSpecDbMax - kSpecDbMin);
+}
+
 static void drawSpectrum()
 {
+    if (!specPaletteReady) buildSpecPalette();
     useFont();
     drawBackdrop();
-    drawHeader("Spectrum");
-    drawPanel(4, 28, 312, 168);
-    if (!specScanned) {
-        centerText(160, 100, "Press Enter to scan", theme().fg, glassBase());
-        centerText(160, 122, "Sweeps 902 to 928 MHz", kMuted, glassBase());
-    } else {
-        int peak = 0;
-        for (int i = 1; i < kSpecPoints; i++) {
-            if (specDb[i] > specDb[peak]) peak = i;
-        }
+    drawHeader(specLive ? "Spectrum" : "Spectrum paused");
+    glassCard(2, 26, 316, 212, 8);
+    uint16_t plotBg = mix(glassBase(), TFT_BLACK, 120);
+
+    // Readout row: span on the left, peak on the right.
+    putText(10, 29, "span 25.75 MHz", kMuted, glassBase());
+    int peak = 0;
+    for (int i = 1; i < kSpecPoints; i++) {
+        if (specDb[i] > specDb[peak]) peak = i;
+    }
+    if (specScanned) {
         char pk[40];
-        snprintf(pk, sizeof(pk), "Peak %.1f MHz  %d dBm", 902.0f + 0.5f * peak, specDb[peak]);
-        putText(12, 34, pk, theme().accent, glassBase());
-        for (int i = 0; i < kSpecPoints; i++) {
-            int level = specDb[i];
-            if (level < -120) level = -120;
-            if (level > -50) level = -50;
-            int h = (level + 120) * 130 / 70;
-            canvas.fillRect(12 + i * 5, 186 - h, 4, h, i == peak ? 0xFD20 : theme().accent);
+        snprintf(pk, sizeof(pk), "peak %d @ %.2f", specDb[peak], kSpecStartMHz + kSpecStepMHz * peak);
+        canvas.setTextColor(kPeakYellow, glassBase());
+        canvas.setCursor(312 - static_cast<int>(canvas.textWidth(pk)), 29);
+        canvas.print(pk);
+    }
+
+    // Trace plot with dBm axis.
+    canvas.fillRect(kPlotX, kTraceTop, kPlotW, kTraceBot - kTraceTop + 1, plotBg);
+    canvas.drawRect(kPlotX, kTraceTop, kPlotW, kTraceBot - kTraceTop + 1, kBorder);
+    canvas.drawFastHLine(kPlotX, traceY(-110), kPlotW, kBorder);
+    putText(6, traceY(-90) - 8, "-90", kMuted, glassBase());
+    putText(6, traceY(-110) - 8, "-110", kMuted, glassBase());
+    putText(6, traceY(-130) - 8, "-130", kMuted, glassBase());
+    if (specScanned) {
+        for (int i = 1; i < kSpecPoints; i++) {
+            canvas.drawLine(traceX(i - 1), traceY(specDb[i - 1]), traceX(i), traceY(specDb[i]), theme().accent);
+        }
+        canvas.fillCircle(traceX(peak), traceY(specDb[peak]), 3, kPeakYellow);
+    } else {
+        centerText(kPlotX + kPlotW / 2, 74, "Scanning 902 to 928 MHz", kMuted, plotBg);
+    }
+
+    // Waterfall: newest sweep on top, 2 px per sweep.
+    canvas.fillRect(kPlotX, kWfTop, kPlotW, kWfRows * 2, plotBg);
+    if (specScanned) {
+        for (int r = 0; r < kWfRows; r++) {
+            int row = (wfHead - 1 - r + kWfRows) % kWfRows;
+            int y = kWfTop + r * 2;
+            for (int i = 0; i < kSpecPoints; i++) {
+                int x0 = kPlotX + i * kPlotW / kSpecPoints;
+                int x1 = kPlotX + (i + 1) * kPlotW / kSpecPoints;
+                canvas.fillRect(x0, y, x1 - x0, 2, specPalette[wfRows[row][i]]);
+            }
         }
     }
-    putText(4, 202, "902 MHz", kMuted, backdropAt(202));
-    putText(256, 202, "927 MHz", kMuted, backdropAt(202));
+
+    // Color legend: quiet at the bottom, loud at the top.
+    const int legendH = kWfRows * 2;
+    for (int y = 0; y < legendH; y++) {
+        canvas.drawFastHLine(4, kWfTop + y, 6, specPalette[255 - y * 255 / (legendH - 1)]);
+    }
+    putText(13, kWfTop - 2, "-90", kMuted, glassBase());
+    putText(13, kWfTop + legendH - 14, "-130", kMuted, glassBase());
+
+    // Frequency axis.
+    putText(kPlotX, 194, "902.00", kMuted, glassBase());
+    centerText(kPlotX + kPlotW / 2, 194, "915.00 MHz", kMuted, glassBase());
+    canvas.setTextColor(kMuted, glassBase());
+    canvas.setCursor(312 - static_cast<int>(canvas.textWidth("927.75")), 194);
+    canvas.print("927.75");
+
+    centerText(160, 216, specLive ? "Enter pauses" : "Enter resumes", kMuted, glassBase());
 }
 
 static void drawSignal()
@@ -976,6 +1069,7 @@ static void openTile(int i)
     case 5: screen = Screen::Settings; settingsSel = 0; break;
     case 3:
         screen = Screen::Spectrum;
+        specLive = true;
         break;
     case 4:
         screen = Screen::Signal;
@@ -1111,7 +1205,7 @@ static void handleKey(int c)
             else if (c == 'q' || c == 8 || c == 127) backFrom(screen);
         }
     } else if (screen == Screen::Spectrum && (c == 'r' || c == '\r' || c == '\n')) {
-        sweepSpectrum();
+        specLive = !specLive;
     } else {
         if (c == 'q' || c == 8 || c == 127) goHome();
     }
@@ -1329,7 +1423,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             activateSettingItem(screen, i);
         }
     } else if (screen == Screen::Spectrum && sy >= 18) {
-        sweepSpectrum();
+        specLive = !specLive;
     } else if (sy < 18) {
         goHome();
     }
@@ -1492,6 +1586,10 @@ void loop()
     pollKeyboard();
     pollTrackball();
     pollTouch();
+    if (screen == Screen::Spectrum && specLive && millis() - specSweepMs > 150) {
+        sweepSpectrum();
+        drawScreen();
+    }
     static uint32_t lastAnim = 0;
     if (screen == Screen::Home && gpsOn && millis() - lastAnim > 180) {
         lastAnim = millis();
