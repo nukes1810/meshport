@@ -7,6 +7,8 @@
 //   id            show this device's node number and public key
 //   peer <hex>    set the other device's public key (64 hex characters)
 //   send <text>   send an encrypted direct message to the peer
+//   pub <text>    send a public message on the default LongFast channel
+//                 (readable by any Meshtastic node on the default channel)
 //   help          list commands
 // Incoming direct messages are printed as they arrive.
 //
@@ -130,12 +132,37 @@ static void sendText(const String &text)
     }
 }
 
+static void sendPublic(const String &text)
+{
+    packetCounter++;
+    Data d;
+    d.portnum = kPortTextMessage;
+    std::string body(text.c_str());
+    d.payload.assign(body.begin(), body.end());
+    Header h{};
+    h.to = 0xFFFFFFFFu;            // broadcast
+    h.from = myNode;
+    h.id = packetCounter;
+    h.flags = 0x03 | (0x03 << kFlagHopStartShift);
+    h.channel = channelByte;
+    std::vector<uint8_t> frame;
+    if (!sealFrame(kChannelKey, sizeof(kChannelKey), h, d, frame)) {
+        Serial.println("could not build public message");
+        return;
+    }
+    if (driver->send(frame)) {
+        Serial.printf("public sent (%u bytes on air)\n", (unsigned)frame.size());
+    } else {
+        Serial.printf("send failed, RadioLib code %d\n", (int)driver->lastTxError());
+    }
+}
+
 static void handleLine(String cmd)
 {
     cmd.trim();
     if (cmd.length() == 0) return;
     if (cmd == "help") {
-        Serial.println("id | peer <hex> | send <text> | help");
+        Serial.println("id | peer <hex> | send <text> | pub <text> | diag | help");
     } else if (cmd == "id") {
         showId();
     } else if (cmd == "diag") {
@@ -157,6 +184,8 @@ static void handleLine(String cmd)
         }
     } else if (cmd.startsWith("send ")) {
         sendText(cmd.substring(5));
+    } else if (cmd.startsWith("pub ")) {
+        sendPublic(cmd.substring(4));
     } else {
         Serial.println("unknown command, type help");
     }
@@ -201,6 +230,7 @@ void setup()
         while (true) delay(1000);
     }
     myNode = nodeNumberFromPublicKey(me.pub);
+    packetCounter = (uint32_t)random(1, 0x7fffffff);
     channelByte = static_cast<uint8_t>(channelHash("LongFast", kChannelKey, sizeof(kChannelKey)));
     Serial.printf("radio ok: %.3f MHz\n", freq);
     showId();
@@ -228,6 +258,14 @@ void loop()
         std::string text;
         if (openDirectFrame(kChannelKey, sizeof(kChannelKey), me, rx.data(), rx.size(), guard, from, text)) {
             Serial.printf("[%08lX] %s  (rssi %.0f)\n", (unsigned long)from, text.c_str(), rssi);
+        } else {
+            Header h{};
+            Data d;
+            if (openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d) &&
+                d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode) {
+                std::string body(d.payload.begin(), d.payload.end());
+                Serial.printf("[PUBLIC %08lX] %s  (rssi %.0f)\n", (unsigned long)h.from, body.c_str(), rssi);
+            }
         }
         // Frames that are not direct messages for this device (other traffic) are ignored.
     }
