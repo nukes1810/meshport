@@ -857,7 +857,9 @@ void setup()
     myNode = nodeNumberFromPublicKey(me.pub);
     packetCounter = (uint32_t)random(1, 0x7fffffff);
     channelByte = static_cast<uint8_t>(channelHash("LongFast", kChannelKey, sizeof(kChannelKey)));
+#ifdef MESHPORT_TDECK_SCREEN
     loraFreqMHz = freq;
+#endif
     Serial.printf("radio ok: %.3f MHz\n", freq);
     showId();
     Serial.println("type help for commands");
