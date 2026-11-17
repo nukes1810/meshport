@@ -248,12 +248,16 @@ static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
                     SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map,
-                    SettingsWifi, WifiPassword };
+                    SettingsWifi, WifiPassword, AppGrid };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
 static const char *kTiles[] = {"Public", "Contacts", "Nodes", "Spectrum", "Signal", "Settings"};
 static constexpr int kTileCount = 6;
+static constexpr int kAppMax = 24;
+static int appCount = kTileCount;              // apps in the launcher
+static int appOrder[kAppMax] = {0, 1, 2, 3, 4, 5};   // app ids in launcher order (saved)
+static const char *kAppNames[kTileCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup"};
 static const char *soonName = "";
 
 struct NodeEntry {
@@ -634,6 +638,22 @@ static void loadSettings()
     wifiSsid = p.getString("wifiSsid", "");
     wifiPass = p.getString("wifiPass", "");
     wifiOn = p.getBool("wifiOn", wifiOn);
+    {
+        // Apply the saved launcher order only if it is a valid permutation of the apps.
+        String ord = p.getString("appOrder", "");
+        if (static_cast<int>(ord.length()) == appCount) {
+            bool seen[kAppMax];
+            int next[kAppMax];
+            bool ok = true;
+            for (int i = 0; i < appCount; i++) seen[i] = false;
+            for (int i = 0; i < appCount && ok; i++) {
+                int v = ord[i] - '0';
+                if (v < 0 || v >= appCount || seen[v]) ok = false;
+                else { seen[v] = true; next[i] = v; }
+            }
+            if (ok) for (int i = 0; i < appCount; i++) appOrder[i] = next[i];
+        }
+    }
     p.end();
 }
 
@@ -647,6 +667,11 @@ static void saveSettings()
     p.putInt("theme", themeIndex);
     p.putInt("bg", bgIndex);
     p.putBool("gpsOn", gpsOn);
+    {
+        String ord;
+        for (int i = 0; i < appCount; i++) ord += static_cast<char>('0' + appOrder[i]);
+        p.putString("appOrder", ord);
+    }
     p.end();
 }
 
@@ -979,11 +1004,12 @@ static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
         canvas.drawFastHLine(cx - 5, cy - 3, 10, fill);
         canvas.drawFastHLine(cx - 5, cy, 7, fill);
         break;
-    case 1: // Peers: two people silhouettes
-        canvas.fillCircle(cx - 4, cy - 4, 3, col);
-        canvas.fillRoundRect(cx - 9, cy + 1, 10, 7, 3, col);
-        canvas.drawCircle(cx + 4, cy - 4, 3, col);
-        canvas.drawRoundRect(cx, cy + 1, 9, 7, 3, col);
+    case 1: // Maps: folded map with a pin
+        canvas.drawRoundRect(cx - 9, cy - 7, 18, 14, 2, col);
+        canvas.drawFastVLine(cx - 3, cy - 6, 12, col);
+        canvas.drawFastVLine(cx + 3, cy - 6, 12, col);
+        canvas.fillCircle(cx + 5, cy - 2, 2, col);
+        canvas.fillTriangle(cx + 3, cy, cx + 7, cy, cx + 5, cy + 3, col);
         break;
     case 2: // Nodes: mesh topology triangle
         canvas.drawLine(cx, cy - 7, cx - 8, cy + 6, col);
@@ -1110,24 +1136,24 @@ static void drawHome()
     drawPanel(6, 136, 308, 96);
     useFontSmall();
     putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
-    static const char *kShort[kTileCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup"};
     for (int i = 0; i < kTileCount; i++) {
+        int id = appOrder[i];
         int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
         if (sel) {
             canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, theme().accent);
             glossTop(cx - 17, cy - 18, 34, 10, 7, theme().accent);
-            drawAppIcon(i, cx, cy, isLightTheme() ? TFT_WHITE : bgColor(), theme().accent);
+            drawAppIcon(id, cx, cy, isLightTheme() ? TFT_WHITE : bgColor(), theme().accent);
         } else {
             uint16_t tileBg = subCardBase();
             canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, tileBg);
             glossTop(cx - 17, cy - 18, 34, 10, 7, tileBg);
             canvas.drawRoundRect(cx - 20, cy - 20, 40, 40, 11, mix(theme().accent, tileBg, 165));
-            drawAppIcon(i, cx, cy, theme().accent, tileBg);
+            drawAppIcon(id, cx, cy, theme().accent, tileBg);
         }
         useFont();
-        centerText(cx, 204, kShort[i], sel ? theme().accent : theme().fg, glassBase());
-        if (i == 0 && unreadChat > 0) drawBadge(cx + 17, cy - 17, unreadChat);
+        centerText(cx, 204, kAppNames[id], sel ? theme().accent : theme().fg, glassBase());
+        if (id == 0 && unreadChat > 0) drawBadge(cx + 17, cy - 17, unreadChat);
     }
 }
 
@@ -1412,6 +1438,54 @@ static void drawMap()
     snprintf(status, sizeof(status), "z%d  %s%s", mapZoom, gpsHasPos ? "GPS fix" : "no GPS fix",
              mapFollow ? "  follow" : "  panned");
     putText(4, kMapY + kMapH - 13, status, TFT_WHITE, TFT_BLACK);
+}
+
+// All apps: a 4-column grid, three rows per page. The page follows the selection.
+static constexpr int kGridCols = 4;
+static constexpr int kGridRows = 3;
+static constexpr int kGridPerPage = kGridCols * kGridRows;
+static int appSel = 0;                 // position in appOrder that is selected
+static bool appMoving = false;         // picked up: arrows move the app
+
+// Moves the selection by delta positions. While moving, the app moves with it.
+static void appStep(int delta)
+{
+    int target = constrain(appSel + delta, 0, appCount - 1);
+    if (appMoving && target != appSel) {
+        int t = appOrder[appSel];
+        appOrder[appSel] = appOrder[target];
+        appOrder[target] = t;
+    }
+    appSel = target;
+}
+
+static void drawAppGrid()
+{
+    useFont();
+    drawBackdrop();
+    drawHeader(appMoving ? "Move app" : "All apps");
+    int page = appSel / kGridPerPage;
+    for (int k = 0; k < kGridPerPage; k++) {
+        int pos = page * kGridPerPage + k;
+        if (pos >= appCount) break;
+        int cx = 40 + (k % kGridCols) * 80;
+        int cy = 62 + (k / kGridCols) * 60;
+        int id = appOrder[pos];
+        bool sel = (pos == appSel);
+        uint16_t tileBg = sel ? (appMoving ? theme().fg : theme().accent) : subCardBase();
+        canvas.fillRoundRect(cx - 22, cy - 22, 44, 44, 12, tileBg);
+        if (!sel) canvas.drawRoundRect(cx - 22, cy - 22, 44, 44, 12, mix(theme().accent, tileBg, 165));
+        uint16_t iconCol = sel ? (isLightTheme() ? TFT_WHITE : bgColor()) : theme().accent;
+        drawAppIcon(id, cx, cy, iconCol, tileBg);
+        useFontSmall();
+        centerText(cx, cy + 26, kAppNames[id], sel ? theme().accent : theme().fg, backdropAt(cy + 26));
+    }
+    // Page dots.
+    int pages = (appCount + kGridPerPage - 1) / kGridPerPage;
+    for (int p = 0; p < pages; p++) {
+        uint16_t dot = (p == page) ? theme().accent : kBorder;
+        canvas.fillCircle(160 - (pages - 1) * 6 + p * 12, 230, 3, dot);
+    }
 }
 
 // Password entry for the chosen network. Typed characters show as dots.
@@ -1766,6 +1840,7 @@ static void drawScreen()
     case Screen::SettingsDisplay:
     case Screen::SettingsWifi: drawSettingsScreen(screen); break;
     case Screen::WifiPassword: drawWifiPassword(); break;
+    case Screen::AppGrid: drawAppGrid(); break;
     }
     canvas.pushSprite(&lcd, 0, 0);
 }
@@ -1812,6 +1887,7 @@ static void backFrom(Screen s)
 {
     settingsSel = 0;
     if (s == Screen::WifiPassword) screen = Screen::SettingsWifi;
+    else if (s == Screen::AppGrid) { appMoving = false; saveSettings(); goHome(); }
     else if (s == Screen::NodeInfo) screen = Screen::Nodes;
     else if (s == Screen::Nodes) goHome();
     else if (s == Screen::Settings) goHome();
@@ -1899,6 +1975,10 @@ static void handleKey(int c)
     // Trackball codes 0x80-0x84 (up, down, left, right, center).
     const bool track = (c >= 0x80 && c <= 0x84);
     if (track && screen == Screen::WifiPassword) return;   // the trackball must not type into the password
+    if (track && screen == Screen::AppGrid) {
+        // Trackball center picks an app up or drops it; arrows move the selection.
+        c = (c == 0x80) ? 'w' : (c == 0x81) ? 's' : (c == 0x82) ? 'a' : (c == 0x83) ? 'd' : 'm';
+    }
     if (track && screen == Screen::Public) {
         // Trackball never types into the chat: left leaves, center sends or leaves when empty.
         if (c == 0x80 && inputBuf.length() == 0) {
@@ -1913,13 +1993,17 @@ static void handleKey(int c)
             return;
         }
         c = '\r';
-    } else if (track) {
+    } else if (track && screen != Screen::AppGrid) {
         c = (c == 0x80) ? 'w' : (c == 0x81) ? 's' : (c == 0x82) ? 'a' : (c == 0x83) ? 'd' : '\r';
     }
     if (c == 27) {
         goHome();
     } else if (screen == Screen::Home) {
-        if (homeSel >= kWidgetFirst) {
+        if (c == 'g') {
+            screen = Screen::AppGrid;
+            appSel = 0;
+            appMoving = false;
+        } else if (homeSel >= kWidgetFirst) {
             int w = homeSel - kWidgetFirst;
             if (c == 'a') homeSel = kWidgetFirst + (w + 2) % 3;
             else if (c == 'd') homeSel = kWidgetFirst + (w + 1) % 3;
@@ -1929,7 +2013,7 @@ static void handleKey(int c)
             if (c == 'a') homeSel = (homeSel + kTileCount - 1) % kTileCount;
             else if (c == 'd') homeSel = (homeSel + 1) % kTileCount;
             else if (c == 'w') homeSel = kWidgetFirst + (homeSel / 2 < 2 ? homeSel / 2 : 2);
-            else if (c == '\r' || c == '\n') openTile(homeSel);
+            else if (c == '\r' || c == '\n') openTile(appOrder[homeSel]);
         }
     } else if (screen == Screen::Public) {
         if (c == '\r' || c == '\n') {
@@ -1969,6 +2053,26 @@ static void handleKey(int c)
         if (c == 'q' || c == 8 || c == 127) goHome();
     } else if (screen == Screen::NodeInfo) {
         if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') screen = Screen::Nodes;
+    } else if (screen == Screen::AppGrid) {
+        if (c == 'a') appStep(-1);
+        else if (c == 'd') appStep(1);
+        else if (c == 'w') appStep(-kGridCols);
+        else if (c == 's') appStep(kGridCols);
+        else if (c == 'm') {
+            appMoving = !appMoving;
+            if (!appMoving) saveSettings();
+        } else if (c == '\r' || c == '\n') {
+            if (appMoving) {
+                appMoving = false;
+                saveSettings();
+            } else {
+                openTile(appOrder[appSel]);
+            }
+        } else if (c == 'q' || c == 8 || c == 127) {
+            appMoving = false;
+            saveSettings();
+            goHome();
+        }
     } else if (screen == Screen::WifiPassword) {
         if (c == '\r' || c == '\n') {
             connectWifi(wifiPickSsid, wifiPassBuf);
@@ -2193,10 +2297,15 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             int w = constrain((sx - 162) / 51, 0, 2);
             homeSel = kWidgetFirst + w;
             activateWidget(w);
+        } else if (sy >= 134 && sy < 150) {
+            // Applications header: open the full app grid.
+            screen = Screen::AppGrid;
+            appSel = 0;
+            appMoving = false;
         } else if (sy >= 140 && sy < 194) {
             int idx = constrain(sx / 53, 0, kTileCount - 1);
             homeSel = idx;
-            openTile(idx);
+            openTile(appOrder[idx]);
         }
     } else if (isSettingsScreen(screen)) {
         char tmp[8][40];
@@ -2205,6 +2314,16 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             int i = constrain((sy - 36) / 26, 0, n - 1);
             settingsSel = i;
             activateSettingItem(screen, i);
+        }
+    } else if (screen == Screen::AppGrid && sy >= 32 && sy < 212) {
+        int col = constrain(sx / 80, 0, kGridCols - 1);
+        int row = constrain((sy - 32) / 60, 0, kGridRows - 1);
+        int page = appSel / kGridPerPage;
+        int pos = page * kGridPerPage + row * kGridCols + col;
+        if (pos < appCount) {
+            appSel = pos;
+            appMoving = false;
+            openTile(appOrder[pos]);
         }
     } else if (screen == Screen::Nodes && sy >= 30 && sy < 30 + 6 * 33) {
         int idx = nodeTop() + (sy - 30) / 33;
