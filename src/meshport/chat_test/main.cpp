@@ -403,75 +403,135 @@ static void drawToggle(int x, int y, bool on)
     canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
 }
 
+// Line icons for the app row. Drawn with primitives so they stay sharp at 320x240.
+static void drawAppIcon(int idx, int cx, int cy, uint16_t col)
+{
+    switch (idx) {
+    case 0: // Public: speech bubble
+        canvas.fillRoundRect(cx - 9, cy - 8, 18, 13, 4, col);
+        canvas.fillTriangle(cx - 6, cy + 4, cx - 1, cy + 4, cx - 7, cy + 9, col);
+        break;
+    case 1: // Contacts: two people
+        canvas.drawCircle(cx - 4, cy - 4, 3, col);
+        canvas.drawCircle(cx + 4, cy - 4, 3, col);
+        canvas.drawRoundRect(cx - 10, cy + 1, 12, 8, 4, col);
+        canvas.drawRoundRect(cx - 2, cy + 1, 12, 8, 4, col);
+        break;
+    case 2: // Nodes: connected dots
+        canvas.drawLine(cx, cy - 7, cx - 8, cy + 6, col);
+        canvas.drawLine(cx, cy - 7, cx + 8, cy + 6, col);
+        canvas.drawLine(cx - 8, cy + 6, cx + 8, cy + 6, col);
+        canvas.fillCircle(cx, cy - 7, 3, col);
+        canvas.fillCircle(cx - 8, cy + 6, 3, col);
+        canvas.fillCircle(cx + 8, cy + 6, 3, col);
+        break;
+    case 3: // Spectrum: pulse line
+        canvas.drawLine(cx - 10, cy, cx - 5, cy, col);
+        canvas.drawLine(cx - 5, cy, cx - 2, cy - 7, col);
+        canvas.drawLine(cx - 2, cy - 7, cx + 2, cy + 7, col);
+        canvas.drawLine(cx + 2, cy + 7, cx + 5, cy, col);
+        canvas.drawLine(cx + 5, cy, cx + 10, cy, col);
+        break;
+    case 4: // Signal: rising bars
+        canvas.fillRect(cx - 9, cy + 2, 3, 6, col);
+        canvas.fillRect(cx - 4, cy - 1, 3, 9, col);
+        canvas.fillRect(cx + 1, cy - 5, 3, 13, col);
+        canvas.fillRect(cx + 6, cy - 9, 3, 17, col);
+        break;
+    case 5: // Settings: gear
+        canvas.drawCircle(cx, cy, 8, col);
+        canvas.drawCircle(cx, cy, 3, col);
+        canvas.fillRect(cx - 1, cy - 11, 3, 4, col);
+        canvas.fillRect(cx - 1, cy + 7, 3, 4, col);
+        canvas.fillRect(cx - 11, cy - 1, 4, 3, col);
+        canvas.fillRect(cx + 7, cy - 1, 4, 3, col);
+        break;
+    }
+}
+
 static void drawHome()
 {
     useFont();
     drawBackdrop();
 
-    // Status bar: uptime on the left, link pills on the right.
+    // Status bar: live dot and uptime, frequency, link pills on the right.
+    canvas.fillCircle(10, 11, 3, 0x07E0);
     unsigned long mins = millis() / 60000;
     char up[24];
     snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
-    putText(8, 3, up, theme().fg, bgColor());
+    putText(18, 3, up, theme().fg, bgColor());
+    putText(112, 3, "906.9M", kMuted, bgColor());
     const char *links[3] = {"WiFi", "GPS", "BT"};
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
     const int linkX[3] = {194, 240, 282};
     const int linkW[3] = {42, 36, 30};
     for (int i = 0; i < 3; i++) {
-        uint16_t fill = linkOn[i] ? theme().accent : bgColor();
-        uint16_t txt = linkOn[i] ? bgColor() : kMuted;
+        uint16_t fill = linkOn[i] ? mix(theme().panel, theme().accent, 60) : bgColor();
+        uint16_t txt = linkOn[i] ? theme().accent : kMuted;
         canvas.fillRoundRect(linkX[i], 3, linkW[i], 16, 8, fill);
-        if (!linkOn[i]) canvas.drawRoundRect(linkX[i], 3, linkW[i], 16, 8, kBorder);
+        canvas.drawRoundRect(linkX[i], 3, linkW[i], 16, 8, linkOn[i] ? theme().accent : kBorder);
         centerText(linkX[i] + linkW[i] / 2, 3, links[i], txt, fill);
     }
     canvas.drawFastHLine(0, 22, 320, theme().accent);
 
-    // Alerts card (left).
+    // Alerts card (left): header with SNR pill, then three stat rows.
     drawPanel(6, 32, 150, 98);
-    putText(16, 39, "Alerts", theme().accent, theme().panel);
-    String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
-    if (lastMsg.length() > 19) lastMsg = lastMsg.substring(0, 19);
-    char heard[24];
-    snprintf(heard, sizeof(heard), "Nodes heard  %u", (unsigned)nodes.size());
-    String rows[3] = {String(heard), String("Last: ") + lastMsg, String("LongFast 906.9")};
-    for (int i = 0; i < 3; i++) {
-        int y = 58 + i * 20;
-        glassCard(12, y, 138, 16, 5);
-        putText(18, y, rows[i].c_str(), theme().fg, bgColor());
-    }
+    putText(16, 38, "ALERTS", theme().accent, theme().panel);
+    char snr[16];
+    snprintf(snr, sizeof(snr), "SNR %+.1f", lastSnr);
+    canvas.fillRoundRect(78, 36, 72, 15, 7, mix(theme().panel, theme().accent, 60));
+    centerText(114, 37, snr, theme().accent, mix(theme().panel, theme().accent, 60));
 
-    // Widget card (right): WiFi, GPS, BT toggles.
+    String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
+    if (lastMsg.length() > 17) lastMsg = lastMsg.substring(0, 17);
+    char heard[12];
+    snprintf(heard, sizeof(heard), "%u", (unsigned)nodes.size());
+    glassCard(12, 56, 138, 16, 5);
+    putText(18, 57, "Nodes heard", theme().fg, theme().panel);
+    canvas.fillRoundRect(124, 57, 20, 13, 6, theme().accent);
+    centerText(134, 57, heard, bgColor(), theme().accent);
+
+    glassCard(12, 76, 138, 16, 5);
+    String lastLine = String("Last: ") + lastMsg;
+    putText(18, 77, lastLine.c_str(), theme().fg, theme().panel);
+    canvas.fillCircle(144, 84, 3, chatLines.empty() ? kMuted : 0x07E0);
+
+    glassCard(12, 96, 138, 16, 5);
+    putText(18, 97, "LongFast 906.9 MHz", theme().fg, theme().panel);
+
+    // Widget card (right): WiFi, GPS, Bluetooth toggles.
     drawPanel(164, 32, 150, 98);
-    putText(174, 39, "Widgets", theme().accent, theme().panel);
+    putText(174, 38, "WIDGETS", theme().accent, theme().panel);
+    putText(270, 38, "PWR", kMuted, theme().panel);
     const char *names[3] = {"WiFi", "GPS", "BT"};
     for (int i = 0; i < 3; i++) {
         int x = 176 + i * 46;
         bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) canvas.drawRoundRect(x - 6, 58, 46, 66, 8, theme().accent);
-        centerText(x + 18, 62, names[i], theme().fg, theme().panel);
-        drawToggle(x, 82, linkOn[i]);
+        if (sel) canvas.drawRoundRect(x - 6, 54, 46, 70, 8, theme().accent);
+        centerText(x + 18, 58, names[i], theme().fg, theme().panel);
+        drawToggle(x, 80, linkOn[i]);
         centerText(x + 18, 106, linkOn[i] ? "ON" : "OFF", linkOn[i] ? theme().accent : kMuted, theme().panel);
     }
     canvas.drawFastVLine(219, 58, 66, kBorder);
     canvas.drawFastVLine(265, 58, 66, kBorder);
 
-    // App row.
-    putText(10, 134, "Apps", theme().fg, bgColor());
-    static const char *kGlyph[kTileCount] = {"P", "C", "N", "~", "=", "*"};
+    // Apps card: six icon tiles.
+    drawPanel(6, 136, 308, 92);
+    putText(16, 142, "APPS", theme().accent, theme().panel);
+    putText(206, 142, "Trackball / Tap", kMuted, theme().panel);
     for (int i = 0; i < kTileCount; i++) {
         int cx = 26 + i * 53, cy = 170;
         bool sel = (homeSel == i);
         if (sel) {
-            canvas.fillCircle(cx, cy, 18, theme().accent);
-            centerText(cx, cy - 8, kGlyph[i], bgColor(), theme().accent);
+            canvas.fillCircle(cx, cy, 17, theme().accent);
+            drawAppIcon(i, cx, cy, bgColor());
         } else {
-            canvas.fillCircle(cx, cy, 18, theme().panel);
-            canvas.drawCircle(cx, cy, 18, kBorder);
-            centerText(cx, cy - 8, kGlyph[i], theme().accent, theme().panel);
+            canvas.fillCircle(cx, cy, 17, theme().panel);
+            canvas.drawCircle(cx, cy, 17, theme().accent);
+            drawAppIcon(i, cx, cy, theme().accent);
         }
-        centerText(cx, 191, kTiles[i], sel ? theme().accent : theme().fg, bgColor());
+        centerText(cx, 192, kTiles[i], sel ? theme().accent : theme().fg, theme().panel);
     }
-
 }
 
 static void drawPublic()
