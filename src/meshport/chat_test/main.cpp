@@ -545,6 +545,8 @@ static void pollTouch()
         if (gt911Read(0x8150, p, 8) && !wasDown) {
             uint16_t x = p[1] | (p[2] << 8);
             uint16_t y = p[3] | (p[4] << 8);
+            Serial.printf("touch bytes %02X %02X %02X %02X %02X %02X %02X %02X\n", p[0], p[1], p[2], p[3],
+                          p[4], p[5], p[6], p[7]);
             Serial.printf("touch raw x=%u y=%u\n", x, y);
             handleTouchTap(x, y);
         }
