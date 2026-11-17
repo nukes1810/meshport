@@ -1023,6 +1023,30 @@ static void pollTouch()
 }
 #endif
 
+// Routing acknowledgment for a received packet that asked for one. The sender
+// marks a message "Failed to deliver" until it sees this, so every packet with
+// want_ack gets one, including duplicates.
+static void sendAck(const Header &req)
+{
+    packetCounter++;
+    Data d;
+    d.portnum = 5;               // ROUTING_APP
+    d.payload = {0x18, 0x00};    // Routing { error_reason: NONE }
+    d.requestId = req.id;
+    Header h{};
+    h.to = req.from;
+    h.from = myNode;
+    h.id = packetCounter;
+    h.flags = 0x03 | (0x03 << kFlagHopStartShift);
+    h.channel = channelByte;
+    std::vector<uint8_t> frame;
+    if (sealFrame(kChannelKey, sizeof(kChannelKey), h, d, frame)) {
+        if (driver->send(frame)) {
+            Serial.printf("ack sent for %08lX\n", (unsigned long)req.id);
+        }
+    }
+}
+
 void setup()
 {
     Serial.begin(115200);
@@ -1113,6 +1137,13 @@ void loop()
 #endif
 
     if (driver->poll(rx, rssi, snr)) {
+        if (rx.size() >= 16) {
+            Header req = unpackHeader(rx.data());
+            if ((req.flags & kFlagWantAckMask) && req.from != myNode &&
+                (req.to == myNode || req.to == 0xFFFFFFFFu)) {
+                sendAck(req);
+            }
+        }
 #ifdef MESHPORT_TDECK_SCREEN
         if (rx.size() >= 16) {
             Header seen = unpackHeader(rx.data());
