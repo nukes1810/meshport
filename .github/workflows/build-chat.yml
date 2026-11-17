@@ -1,0 +1,49 @@
+name: Build chat firmware (T-Deck)
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "src/**"
+      - "platformio.ini"
+      - ".github/workflows/build-chat.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache PlatformIO
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-chat-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install "platformio>=6.1.15"
+
+      - name: Build chat
+        run: pio run -e meshport_chat
+
+      - name: Collect flash images
+        run: |
+          mkdir -p out
+          cp .pio/build/meshport_chat/bootloader.bin out/
+          cp .pio/build/meshport_chat/partitions.bin out/
+          cp .pio/build/meshport_chat/firmware.bin out/
+          ls -lh out
+
+      - name: Upload chat firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: meshport-chat
+          path: out/*
+          if-no-files-found: error
