@@ -60,9 +60,12 @@ bool hkdfSha256(const uint8_t *ikm, size_t ikmLen, const uint8_t *salt, size_t s
     psa_set_key_type(&attr, PSA_KEY_TYPE_DERIVE);
     psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_DERIVE);
     psa_set_key_algorithm(&attr, PSA_ALG_HKDF(PSA_ALG_SHA_256));
+    // PSA rejects a zero-length salt input; an absent salt is the same as all zeros in HKDF.
+    bool saltOk = (saltLen == 0) ||
+                  psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, salt, saltLen) == PSA_SUCCESS;
     bool ok = psa_import_key(&attr, ikm, ikmLen, &secret) == PSA_SUCCESS &&
               psa_key_derivation_setup(&op, PSA_ALG_HKDF(PSA_ALG_SHA_256)) == PSA_SUCCESS &&
-              psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_SALT, salt, saltLen) == PSA_SUCCESS &&
+              saltOk &&
               psa_key_derivation_input_key(&op, PSA_KEY_DERIVATION_INPUT_SECRET, secret) == PSA_SUCCESS &&
               psa_key_derivation_input_bytes(&op, PSA_KEY_DERIVATION_INPUT_INFO, info, infoLen) == PSA_SUCCESS &&
               psa_key_derivation_output_bytes(&op, out, outLen) == PSA_SUCCESS;
