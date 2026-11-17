@@ -280,6 +280,8 @@ struct NodeEntry {
     double lat;
     double lon;
     bool hasPos;           // set from the node's POSITION_APP packets
+    uint8_t pubKey[32];    // public key from the node's User packet (PKC)
+    bool hasKey;
 };
 static std::vector<NodeEntry> nodes;
 static int nodeSel = 0;   // selected row on the Nodes screen, and the node shown in Node Info
@@ -2627,6 +2629,84 @@ static void pollTouch()
 }
 #endif
 
+// Meshtastic NODEINFO_APP payload (protobuf User): public_key is field 8, 32 bytes.
+static constexpr uint32_t kPortNodeInfo = 4;
+
+// Keeps the first public key a node announces, as the Meshtastic firmware does.
+static void noteUserKey(uint32_t id, const std::vector<uint8_t> &payload)
+{
+    size_t i = 0;
+    while (i < payload.size()) {
+        uint64_t key = 0;
+        if (!readVarint(payload, i, key)) break;
+        uint32_t field = static_cast<uint32_t>(key >> 3);
+        uint8_t wire = static_cast<uint8_t>(key & 7);
+        if (wire == 2) {
+            uint64_t len = 0;
+            if (!readVarint(payload, i, len) || i + len > payload.size()) break;
+            if (field == 8 && len == 32) {
+                for (NodeEntry &n : nodes) {
+                    if (n.id == id && !n.hasKey) {
+                        memcpy(n.pubKey, &payload[i], 32);
+                        n.hasKey = true;
+                        Serial.printf("public key from %08lX\n", (unsigned long)id);
+                    }
+                }
+                return;
+            }
+            i += static_cast<size_t>(len);
+        } else if (wire == 0) {
+            uint64_t skip = 0;
+            if (!readVarint(payload, i, skip)) break;
+        } else if (wire == 5) {
+            i += 4;
+        } else if (wire == 1) {
+            i += 8;
+        } else {
+            break;
+        }
+    }
+}
+
+// Broadcasts our User (name, short name, node ID and public key) so other nodes can
+// find our key and send us encrypted direct messages.
+static bool sendUserInfo()
+{
+    std::vector<uint8_t> u;
+    auto putString = [&u](uint8_t field, const char *s) {
+        size_t n = strlen(s);
+        u.push_back(static_cast<uint8_t>((field << 3) | 2));
+        u.push_back(static_cast<uint8_t>(n));
+        u.insert(u.end(), s, s + n);
+    };
+    char idText[12];
+    snprintf(idText, sizeof(idText), "!%08lx", (unsigned long)myNode);
+    putString(1, idText);            // id
+    putString(2, "MeshPort T-Deck"); // long_name
+    putString(3, "MP");              // short_name
+    u.push_back(static_cast<uint8_t>((8 << 3) | 2));   // public_key, field 8
+    u.push_back(32);
+    u.insert(u.end(), me.pub, me.pub + 32);
+
+    packetCounter++;
+    Data d;
+    d.portnum = kPortNodeInfo;
+    d.payload = u;
+    Header h{};
+    h.to = 0xFFFFFFFFu;            // broadcast
+    h.from = myNode;
+    h.id = packetCounter;
+    h.flags = static_cast<uint8_t>(hopLimit | (hopLimit << kFlagHopStartShift));
+    h.channel = channelByte;
+    std::vector<uint8_t> frame;
+    if (!sealFrame(kChannelKey, sizeof(kChannelKey), h, d, frame)) return false;
+    if (driver->send(frame)) {
+        Serial.printf("user info sent (%u bytes on air)\n", (unsigned)frame.size());
+        return true;
+    }
+    return false;
+}
+
 // Routing acknowledgment for a received packet that asked for one. The sender
 // marks a message "Failed to deliver" until it sees this, so every packet with
 // want_ack gets one, including duplicates.
@@ -2737,6 +2817,13 @@ void loop()
         }
     }
 
+    // Announce our name and public key every 15 minutes, first time 5 seconds after boot.
+    static uint32_t lastUserInfoMs = 0;
+    if (millis() > 5000 && (lastUserInfoMs == 0 || millis() - lastUserInfoMs > 900000UL)) {
+        lastUserInfoMs = millis();
+        sendUserInfo();
+    }
+
     std::vector<uint8_t> rx;
     float rssi = 0, snr = 0;
 #ifdef MESHPORT_TDECK_SCREEN
@@ -2810,6 +2897,7 @@ void loop()
             Header h{};
             Data d;
             bool decoded = openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d);
+            if (decoded && d.portnum == kPortNodeInfo) noteUserKey(h.from, d.payload);
 #ifdef MESHPORT_TDECK_SCREEN
             if (decoded && d.portnum == kPortPositionApp) notePosition(h.from, d.payload);
 #endif
