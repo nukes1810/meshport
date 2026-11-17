@@ -2630,7 +2630,6 @@ static void pollTouch()
 #endif
 
 // Meshtastic NODEINFO_APP payload (protobuf User): public_key is field 8, 32 bytes.
-static constexpr uint32_t kPortNodeInfo = 4;
 
 // Keeps the first public key a node announces, as the Meshtastic firmware does.
 static void noteUserKey(uint32_t id, const std::vector<uint8_t> &payload)
