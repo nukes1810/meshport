@@ -29,6 +29,10 @@
 #include "../SecureBackend_psa.cpp"
 #include "../DirectMessage.cpp"
 #include "../DeviceIdentity.cpp"
+#ifdef MESHPORT_TDECK_SCREEN
+#include <Wire.h>
+#include "TDeckScreen.h"
+#endif
 
 using namespace meshport;
 namespace meshport {
@@ -78,6 +82,7 @@ static uint8_t peerPub[32] = {0};
 static uint64_t sendCounter = 0;
 static uint32_t packetCounter = 0;
 static ReplayGuard guard;
+static SeenCache seenPublic;
 static String line;
 
 static void printHex(const uint8_t *p, size_t n)
@@ -191,6 +196,70 @@ static void handleLine(String cmd)
     }
 }
 
+#ifdef MESHPORT_TDECK_SCREEN
+// On-device chat screen: public messages, typed with the T-Deck keyboard (I2C 0x55).
+static LGFX_TDeck lcd;
+static std::vector<String> chatLines;
+static String inputBuf;
+static constexpr int kMaxLines = 12;
+static constexpr int kLineChars = 20;
+static constexpr uint8_t kKeyboardAddr = 0x55;
+
+static void addLine(const String &s)
+{
+    chatLines.push_back(s.substring(0, kLineChars));
+    while (chatLines.size() > kMaxLines) chatLines.erase(chatLines.begin());
+}
+
+static void drawScreen()
+{
+    lcd.fillScreen(TFT_BLACK);
+    lcd.setTextColor(TFT_WHITE, TFT_BLACK);
+    lcd.setTextSize(2);
+    lcd.setCursor(0, 0);
+    char head[24];
+    snprintf(head, sizeof(head), "meshport %08lX", (unsigned long)myNode);
+    lcd.print(head);
+    for (size_t i = 0; i < chatLines.size(); i++) {
+        lcd.setCursor(0, 20 + static_cast<int>(i) * 16);
+        lcd.print(chatLines[i]);
+    }
+    lcd.setTextColor(TFT_GREEN, TFT_BLACK);
+    lcd.setCursor(0, 220);
+    lcd.print("> ");
+    lcd.print(inputBuf.substring(0, kLineChars - 2));
+}
+
+static void handleKey(int c)
+{
+    if (c == '\r' || c == '\n') {
+        if (inputBuf.length()) {
+            String text = inputBuf;
+            inputBuf = "";
+            sendPublic(text);
+            addLine("me: " + text);
+        }
+    } else if (c == 8 || c == 127) {
+        if (inputBuf.length()) inputBuf.remove(inputBuf.length() - 1);
+    } else if (c >= 32 && c < 127) {
+        inputBuf += static_cast<char>(c);
+    }
+    drawScreen();
+}
+
+static void pollKeyboard()
+{
+    static uint32_t last = 0;
+    if (millis() - last < 20) return;
+    last = millis();
+    Wire.requestFrom(kKeyboardAddr, (uint8_t)1);
+    if (Wire.available()) {
+        int c = Wire.read();
+        if (c > 0) handleKey(c);
+    }
+}
+#endif
+
 void setup()
 {
     Serial.begin(115200);
@@ -235,6 +304,15 @@ void setup()
     Serial.printf("radio ok: %.3f MHz\n", freq);
     showId();
     Serial.println("type help for commands");
+#ifdef MESHPORT_TDECK_SCREEN
+    pinMode(42, OUTPUT);       // backlight
+    digitalWrite(42, HIGH);
+    Wire.begin(18, 8);         // T-Deck I2C (keyboard)
+    lcd.init();
+    lcd.setRotation(1);
+    addLine("type a message, Enter sends");
+    drawScreen();
+#endif
 }
 
 void loop()
@@ -253,6 +331,10 @@ void loop()
 
     std::vector<uint8_t> rx;
     float rssi = 0, snr = 0;
+#ifdef MESHPORT_TDECK_SCREEN
+    pollKeyboard();
+#endif
+
     if (driver->poll(rx, rssi, snr)) {
         // Debug: every frame heard, decodable or not.
         if (rx.size() >= 16) {
@@ -270,9 +352,16 @@ void loop()
             Header h{};
             Data d;
             if (openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d) &&
-                d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode) {
+                d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode &&
+                !seenPublic.checkAndInsert(h.from, h.id)) {
                 std::string body(d.payload.begin(), d.payload.end());
                 Serial.printf("[PUBLIC %08lX] %s  (rssi %.0f)\n", (unsigned long)h.from, body.c_str(), rssi);
+#ifdef MESHPORT_TDECK_SCREEN
+                char who[12];
+                snprintf(who, sizeof(who), "%08lX", (unsigned long)h.from);
+                addLine(String(who) + ": " + String(body.c_str()));
+                drawScreen();
+#endif
             }
         }
         // Frames that are not direct messages for this device (other traffic) are ignored.
