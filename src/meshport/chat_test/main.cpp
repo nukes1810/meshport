@@ -255,7 +255,7 @@ static const Theme &theme() { return kThemes[themeIndex]; }
 // Spectrum and signal analyzers.
 static float loraFreqMHz = 906.875f;
 static constexpr int kSpecPoints = 52;   // 902.0 MHz to 927.5 MHz in 0.5 MHz steps
-static float specDb[kSpecPoints];
+static int specDb[kSpecPoints];
 static bool specScanned = false;
 static constexpr size_t kSignalSamples = 60;
 static std::vector<float> rssiHist;
@@ -267,13 +267,6 @@ static void pushRssi(float rssi)
     if (rssiHist.size() > kSignalSamples) rssiHist.erase(rssiHist.begin());
 }
 
-static float clampF(float v, float lo, float hi)
-{
-    if (v < lo) return lo;
-    if (v > hi) return hi;
-    return v;
-}
-
 static void sweepSpectrum()
 {
     for (int i = 0; i < kSpecPoints; i++) {
@@ -281,7 +274,7 @@ static void sweepSpectrum()
         radio->setFrequency(f);
         radio->startReceive();
         delayMicroseconds(3000);
-        specDb[i] = radio->getRSSI();
+        specDb[i] = static_cast<int>(radio->getRSSI());
     }
     radio->setFrequency(loraFreqMHz);
     radio->startReceive();
@@ -514,8 +507,10 @@ static void drawSpectrum()
         lcd.print("Press Enter to scan");
     } else {
         for (int i = 0; i < kSpecPoints; i++) {
-            float level = clampF(specDb[i], -120.0f, -50.0f);
-            int h = static_cast<int>((level + 120.0f) / 70.0f * 170.0f);
+            int level = specDb[i];
+            if (level < -120) level = -120;
+            if (level > -50) level = -50;
+            int h = (level + 120) * 170 / 70;
             int x = 4 + i * 6;
             lcd.fillRect(x, 220 - h, 5, h, theme().accent);
         }
@@ -526,6 +521,14 @@ static void drawSpectrum()
     lcd.print("Enter: scan   q: back");
 }
 
+static int signalY(float rssi)
+{
+    int v = static_cast<int>(rssi);
+    if (v < -130) v = -130;
+    if (v > -40) v = -40;
+    return 220 - (v + 130) * 190 / 90;
+}
+
 static void drawSignal()
 {
     lcd.fillScreen(bgColor());
@@ -533,12 +536,8 @@ static void drawSignal()
     lcd.drawLine(0, 30, 319, 30, theme().fg);
     lcd.drawLine(0, 220, 319, 220, theme().fg);
     for (size_t i = 1; i < rssiHist.size(); i++) {
-        auto yOf = [](float r) {
-            float v = clampF(r, -130.0f, -40.0f);
-            return static_cast<int>(220 - (v + 130.0f) / 90.0f * 190.0f);
-        };
         int x0 = static_cast<int>((i - 1) * 5), x1 = static_cast<int>(i * 5);
-        lcd.drawLine(x0, yOf(rssiHist[i - 1]), x1, yOf(rssiHist[i]), theme().accent);
+        lcd.drawLine(x0, signalY(rssiHist[i - 1]), x1, signalY(rssiHist[i]), theme().accent);
     }
     lcd.setTextColor(theme().fg, bgColor());
     lcd.setTextSize(1);
