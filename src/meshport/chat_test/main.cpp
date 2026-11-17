@@ -14,6 +14,7 @@
 //
 // Unity build: the meshport sources are included directly.
 #include <Arduino.h>
+#include <cstring>
 #include <SPI.h>
 #include <RadioLib.h>
 
@@ -210,14 +211,15 @@ static constexpr uint8_t kKeyboardAddr = 0x55;
 
 struct Theme {
     const char *name;
-    uint16_t bg, fg, accent;
+    uint16_t bg, fg, accent, panel;
 };
 static const Theme kThemes[] = {
-    {"Dark", TFT_BLACK, TFT_WHITE, TFT_CYAN},
-    {"Light", TFT_WHITE, TFT_BLACK, TFT_BLUE},
-    {"Green", TFT_BLACK, TFT_GREEN, TFT_YELLOW},
+    {"Neon Blue", 0x0021, TFT_WHITE, 0x06FF, 0x08A5},
+    {"Neon Green", 0x0021, TFT_WHITE, 0x07E0, 0x0320},
+    {"Light", TFT_WHITE, TFT_BLACK, TFT_BLUE, 0xDEFB},
+    {"Dark", TFT_BLACK, TFT_WHITE, TFT_CYAN, 0x2104},
 };
-static constexpr int kThemeCount = 3;
+static constexpr int kThemeCount = 4;
 static int themeIndex = 0;
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon };
@@ -280,11 +282,11 @@ static void sweepSpectrum()
     Serial.println("spectrum sweep done");
 }
 
-static const uint16_t kBackgrounds[] = {TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
-static const char *kBackgroundNames[] = {"Black", "Navy", "Charcoal", "Forest"};
-static constexpr int kBackgroundCount = 4;
+static const uint16_t kBackgrounds[] = {0, TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
+static const char *kBackgroundNames[] = {"Theme", "Black", "Navy", "Charcoal", "Forest"};
+static constexpr int kBackgroundCount = 5;
 static int bgIndex = 0;
-static uint16_t bgColor() { return kBackgrounds[bgIndex]; }
+static uint16_t bgColor() { return bgIndex == 0 ? theme().bg : kBackgrounds[bgIndex]; }
 
 static bool wifiOn = false;
 static bool btOn = false;
@@ -326,35 +328,93 @@ static void drawHeader(const String &title)
     lcd.print(title);
 }
 
+static void drawPanel(int x, int y, int w, int h)
+{
+    lcd.fillRoundRect(x, y, w, h, 10, theme().panel);
+    lcd.drawRoundRect(x, y, w, h, 10, theme().accent);
+    lcd.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, theme().accent);
+}
+
+static void drawToggle(int x, int y, bool on)
+{
+    lcd.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : 0x2104);
+    lcd.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
+}
+
 static void drawHome()
 {
     lcd.fillScreen(bgColor());
-    char title[24];
-    snprintf(title, sizeof(title), "meshport %08lX", (unsigned long)myNode);
-    drawHeader(title);
+
+    // Status bar
+    lcd.setTextSize(2);
+    lcd.setTextColor(theme().accent, bgColor());
+    lcd.setCursor(4, 2);
+    lcd.print("meshport");
+    char node[24];
+    snprintf(node, sizeof(node), "node %08lX", (unsigned long)myNode);
+    lcd.setTextSize(1);
+    lcd.setTextColor(theme().fg, bgColor());
+    lcd.setCursor(200, 8);
+    lcd.print(node);
+    lcd.drawFastHLine(0, 22, 320, theme().accent);
+
+    // Status card
+    drawPanel(4, 30, 150, 100);
+    lcd.setTextSize(2);
+    lcd.setTextColor(theme().fg, theme().panel);
+    lcd.setCursor(14, 42);
+    lcd.print("Mesh online");
+    char up[32];
+    snprintf(up, sizeof(up), "Up %lu min", (unsigned long)(millis() / 60000));
+    lcd.setTextSize(1);
+    lcd.setTextColor(theme().accent, theme().panel);
+    lcd.setCursor(14, 72);
+    lcd.print(up);
+    char heard[32];
+    snprintf(heard, sizeof(heard), "Nodes heard: %u", (unsigned)nodes.size());
+    lcd.setCursor(14, 86);
+    lcd.print(heard);
+    lcd.setCursor(14, 100);
+    lcd.print("LongFast 906.9 MHz");
+
+    // Widget panel: WiFi, GPS, Bluetooth toggles
+    drawPanel(162, 30, 154, 100);
+    const char *names[3] = {"WiFi", "GPS", "BT"};
+    bool states[3] = {wifiOn, gpsOn, btOn};
+    for (int i = 0; i < 3; i++) {
+        int x = 170 + i * 50;
+        lcd.setTextSize(1);
+        lcd.setTextColor(theme().fg, theme().panel);
+        lcd.setCursor(x, 42);
+        lcd.print(names[i]);
+        bool sel = (homeSel == kWidgetFirst + i);
+        if (sel) lcd.drawRoundRect(x - 4, 66, 44, 26, 8, TFT_WHITE);
+        drawToggle(x, 70, states[i]);
+        lcd.setTextColor(theme().accent, theme().panel);
+        lcd.setCursor(x, 96);
+        lcd.print(states[i] ? "ON" : "off");
+    }
+
+    // App row
     for (int i = 0; i < kTileCount; i++) {
-        int col = i % 3, row = i / 3;
-        int x = col * 106 + 4, y = 22 + row * 82;
-        bool sel = (i == homeSel);
-        lcd.fillRoundRect(x, y, 98, 78, 8, sel ? theme().accent : theme().fg);
-        lcd.setTextColor(bgColor(), sel ? theme().accent : theme().fg);
+        int cx = 26 + i * 53, cy = 165;
+        bool sel = (homeSel == i);
+        lcd.fillCircle(cx, cy, 18, sel ? theme().accent : theme().panel);
+        lcd.drawCircle(cx, cy, 18, theme().accent);
         lcd.setTextSize(2);
-        lcd.setCursor(x + 6, y + 30);
+        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
+        lcd.setCursor(cx - 6, cy - 8);
+        lcd.print(kTiles[i][0]);
+        lcd.setTextSize(1);
+        lcd.setTextColor(theme().fg, bgColor());
+        lcd.setCursor(cx - static_cast<int>(strlen(kTiles[i])) * 3, 190);
         lcd.print(kTiles[i]);
     }
-    const char *names[3] = {"WiFi", "BT", "GPS"};
-    bool states[3] = {wifiOn, btOn, gpsOn};
-    for (int i = 0; i < 3; i++) {
-        int x = 4 + i * 106, y = 190;
-        bool sel = (homeSel == kWidgetFirst + i);
-        lcd.fillRoundRect(x, y, 98, 44, 8, sel ? theme().accent : bgColor());
-        lcd.drawRoundRect(x, y, 98, 44, 8, theme().fg);
-        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
-        lcd.setCursor(x + 8, y + 14);
-        char label[16];
-        snprintf(label, sizeof(label), "%s %s", names[i], states[i] ? "ON" : "off");
-        lcd.print(label);
-    }
+
+    lcd.setTextSize(1);
+    lcd.setTextColor(theme().accent, bgColor());
+    lcd.setCursor(0, 226);
+    lcd.print("w s a d move   Enter opens");
 }
 
 static void drawPublic()
@@ -561,21 +621,17 @@ static void handleKey(int c)
     if (c == 27) {
         goHome();
     } else if (screen == Screen::Home) {
-        if (c == 'a') {
-            if (homeSel >= kWidgetFirst) homeSel = kWidgetFirst + (homeSel - kWidgetFirst + 2) % 3;
-            else homeSel = (homeSel / 3) * 3 + (homeSel % 3 + 2) % 3;
-        } else if (c == 'd') {
-            if (homeSel >= kWidgetFirst) homeSel = kWidgetFirst + (homeSel - kWidgetFirst + 1) % 3;
-            else homeSel = (homeSel / 3) * 3 + (homeSel % 3 + 1) % 3;
-        } else if (c == 'w') {
-            if (homeSel >= kWidgetFirst) homeSel -= 3;
-            else if (homeSel >= 3) homeSel -= 3;
-        } else if (c == 's') {
-            if (homeSel < kWidgetFirst && homeSel < 3) homeSel += 3;
-            else if (homeSel >= 3 && homeSel < kWidgetFirst) homeSel = kWidgetFirst + (homeSel - 3);
-        } else if (c == '\r' || c == '\n') {
-            if (homeSel < kWidgetFirst) openTile(homeSel);
-            else activateWidget(homeSel - kWidgetFirst);
+        if (homeSel >= kWidgetFirst) {
+            int w = homeSel - kWidgetFirst;
+            if (c == 'a') homeSel = kWidgetFirst + (w + 2) % 3;
+            else if (c == 'd') homeSel = kWidgetFirst + (w + 1) % 3;
+            else if (c == 's') homeSel = (w * 2 < kTileCount) ? w * 2 : kTileCount - 1;
+            else if (c == '\r' || c == '\n') activateWidget(w);
+        } else {
+            if (c == 'a') homeSel = (homeSel + kTileCount - 1) % kTileCount;
+            else if (c == 'd') homeSel = (homeSel + 1) % kTileCount;
+            else if (c == 'w') homeSel = kWidgetFirst + (homeSel / 2 < 2 ? homeSel / 2 : 2);
+            else if (c == '\r' || c == '\n') openTile(homeSel);
         }
     } else if (screen == Screen::Public) {
         if (c == '\r' || c == '\n') {
@@ -699,15 +755,14 @@ static void handleTouchTap(uint16_t x, uint16_t y)
     int sy = constrain(static_cast<int>(x), 0, 239);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
     if (screen == Screen::Home) {
-        if (sy >= 190 && sy <= 236) {
-            int w = constrain(sx / 106, 0, 2);
+        if (sy >= 30 && sy < 130 && sx >= 162) {
+            int w = constrain((sx - 162) / 51, 0, 2);
             homeSel = kWidgetFirst + w;
             activateWidget(w);
-        } else if (sy >= 22 && sy < 186) {
-            int col = constrain(sx / 106, 0, 2);
-            int row = constrain((sy - 22) / 82, 0, 1);
-            homeSel = row * 3 + col;
-            openTile(homeSel);
+        } else if (sy >= 140 && sy < 194) {
+            int idx = constrain(sx / 53, 0, kTileCount - 1);
+            homeSel = idx;
+            openTile(idx);
         }
     } else if (screen == Screen::Settings) {
         if (sy >= 40 && sy < 40 + kSettingsCount * 30) {
