@@ -245,7 +245,7 @@ static constexpr int kThemeCount = 4;
 static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
-                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay };
+                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -256,21 +256,27 @@ static const char *soonName = "";
 struct NodeEntry {
     uint32_t id;
     float rssi;
+    float snr;
+    uint32_t firstMs;
     uint32_t lastMs;
+    uint32_t count;     // packets heard from this node
 };
 static std::vector<NodeEntry> nodes;
+static int nodeSel = 0;   // selected row on the Nodes screen, and the node shown in Node Info
 static constexpr size_t kMaxNodes = 16;
 
-static void noteNode(uint32_t id, float rssi)
+static void noteNode(uint32_t id, float rssi, float snr)
 {
     for (NodeEntry &n : nodes) {
         if (n.id == id) {
             n.rssi = rssi;
+            n.snr = snr;
             n.lastMs = millis();
+            n.count++;
             return;
         }
     }
-    if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, millis()});
+    if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, snr, millis(), millis(), 1});
 }
 
 static const Theme &theme() { return kThemes[themeIndex]; }
@@ -917,6 +923,9 @@ static void drawPublic()
     }
 }
 
+// First node shown in the Nodes list, so the selected row stays visible.
+static int nodeTop() { return nodeSel >= 6 ? nodeSel - 5 : 0; }
+
 static void drawNodes()
 {
     useFont();
@@ -933,10 +942,13 @@ static void drawNodes()
         return;
     }
 
+    // Six rows at a time; the window follows the selection.
+    int top = nodeTop();
     uint32_t now = millis();
-    for (size_t i = 0; i < nodes.size() && i < 6; i++) {
-        int y = 30 + static_cast<int>(i) * 33;
-        glassCard(6, y, 308, 28, 7, false);
+    for (int row = 0; row < 6 && top + row < static_cast<int>(nodes.size()); row++) {
+        size_t i = static_cast<size_t>(top + row);
+        int y = 30 + row * 33;
+        glassCard(6, y, 308, 28, 7, static_cast<int>(i) == nodeSel);
 
         // Node badge
         uint16_t badgeBg = mix(theme().accent, glassBase(), 200);
@@ -958,6 +970,51 @@ static void drawNodes()
         snprintf(info, sizeof(info), "%ddBm  %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
         putText(186, y + 6, info, theme().fg, glassBase());
     }
+}
+
+// Human-readable time since an event, e.g. "42s ago", "5m ago".
+static void formatAgo(uint32_t ms, char *out, size_t n)
+{
+    uint32_t s = ms / 1000;
+    if (s < 60) snprintf(out, n, "%lus ago", (unsigned long)s);
+    else if (s < 3600) snprintf(out, n, "%lum ago", (unsigned long)(s / 60));
+    else snprintf(out, n, "%luh ago", (unsigned long)(s / 3600));
+}
+
+// Node Info: everything we know about the selected node.
+static void drawNodeInfo()
+{
+    useFont();
+    drawBackdrop();
+    drawHeader("Node Info");
+    if (nodeSel < 0 || nodeSel >= static_cast<int>(nodes.size())) {
+        centerText(160, 100, "Node not found", theme().fg, glassBase());
+        return;
+    }
+    const NodeEntry &n = nodes[nodeSel];
+    glassCard(8, 30, 304, 200, 10, false);
+
+    char idText[16], shortText[8], rssiText[16], snrText[16], countText[12], firstText[16], lastText[16];
+    snprintf(idText, sizeof(idText), "!%08lx", (unsigned long)n.id);
+    snprintf(shortText, sizeof(shortText), "%04lX", (unsigned long)(n.id & 0xFFFF));
+    snprintf(rssiText, sizeof(rssiText), "%.0f dBm", n.rssi);
+    snprintf(snrText, sizeof(snrText), "%+.1f dB", n.snr);
+    snprintf(countText, sizeof(countText), "%lu", (unsigned long)n.count);
+    formatAgo(millis() - n.firstMs, firstText, sizeof(firstText));
+    formatAgo(millis() - n.lastMs, lastText, sizeof(lastText));
+
+    const char *labels[7] = {"Node ID", "Short name", "Signal (RSSI)", "SNR", "Packets heard",
+                             "First heard", "Last heard"};
+    const char *values[7] = {idText, shortText, rssiText, snrText, countText, firstText, lastText};
+    for (int i = 0; i < 7; i++) {
+        int y = 40 + i * 24;
+        putText(20, y, labels[i], mutedText(), glassBase());
+        canvas.setTextColor(theme().accent, glassBase());
+        canvas.setCursor(308 - static_cast<int>(canvas.textWidth(values[i])), y);
+        canvas.print(values[i]);
+    }
+    useFontSmall();
+    centerText(160, 206, "Long name and position: not decoded yet", mutedText(), glassBase());
 }
 
 static bool isSettingsScreen(Screen s)
@@ -1224,6 +1281,7 @@ static void drawScreen()
     case Screen::Home: drawHome(); break;
     case Screen::Public: drawPublic(); break;
     case Screen::Nodes: drawNodes(); break;
+    case Screen::NodeInfo: drawNodeInfo(); break;
     case Screen::Settings:
     case Screen::SettingsDevice:
     case Screen::SettingsLora:
@@ -1258,10 +1316,19 @@ static void openTile(int i)
 }
 
 // Back from a settings screen: sub-screens return to Settings, Settings returns home.
+static void openNodeInfo(int i)
+{
+    if (i < 0 || i >= static_cast<int>(nodes.size())) return;
+    nodeSel = i;
+    screen = Screen::NodeInfo;
+}
+
 static void backFrom(Screen s)
 {
     settingsSel = 0;
-    if (s == Screen::Settings) goHome();
+    if (s == Screen::NodeInfo) screen = Screen::Nodes;
+    else if (s == Screen::Nodes) goHome();
+    else if (s == Screen::Settings) goHome();
     else if (isSettingsScreen(s)) screen = Screen::Settings;
     else goHome();
 }
@@ -1382,6 +1449,16 @@ static void handleKey(int c)
         }
     } else if (screen == Screen::Spectrum && (c == 'r' || c == '\r' || c == '\n')) {
         specLive = !specLive;
+    } else if (screen == Screen::Nodes) {
+        int n = static_cast<int>(nodes.size());
+        if (n > 0) {
+            if (c == 'w') nodeSel = (nodeSel + n - 1) % n;
+            else if (c == 's') nodeSel = (nodeSel + 1) % n;
+            else if (c == '\r' || c == '\n') openNodeInfo(nodeSel);
+        }
+        if (c == 'q' || c == 8 || c == 127) goHome();
+    } else if (screen == Screen::NodeInfo) {
+        if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') screen = Screen::Nodes;
     } else {
         if (c == 'q' || c == 8 || c == 127) goHome();
     }
@@ -1598,6 +1675,9 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             settingsSel = i;
             activateSettingItem(screen, i);
         }
+    } else if (screen == Screen::Nodes && sy >= 30 && sy < 30 + 6 * 33) {
+        int idx = nodeTop() + (sy - 30) / 33;
+        if (idx < static_cast<int>(nodes.size())) openNodeInfo(idx);
     } else if (screen == Screen::Spectrum && sy >= 18) {
         specLive = !specLive;
     } else if (sy < 18) {
@@ -1786,7 +1866,7 @@ void loop()
         if (rx.size() >= 16) {
             Header seen = unpackHeader(rx.data());
             if (seen.from != myNode) {
-                noteNode(seen.from, rssi);
+                noteNode(seen.from, rssi, snr);
                 pushRssi(rssi);
                 lastSnr = snr;
             }
