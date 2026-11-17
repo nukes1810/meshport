@@ -560,10 +560,11 @@ static void saveSettings()
 }
 
 // --- GPS receiver: NMEA over UART (satellites, altitude, and time) ----------
-// Pins follow the T-Deck Plus GPS module (RX 43, TX 44, 38400 baud). If no
-// sentences arrive, the RX and TX pins may need swapping.
-static constexpr int kGpsRxPin = 43;
-static constexpr int kGpsTxPin = 44;
+// T-Deck Plus GPS module, 38400 baud. Wadamesh names the pins from the module's side
+// (its PIN_GPS_TX = 44 is the pin the ESP32 receives on), so the ESP32 receives on 44
+// and transmits on 43.
+static constexpr int kGpsRxPin = 44;
+static constexpr int kGpsTxPin = 43;
 static constexpr int kUtcOffsetHours = -5;   // Eastern time; change for another zone
 static HardwareSerial gpsSerial(1);
 static bool gpsStarted = false;
