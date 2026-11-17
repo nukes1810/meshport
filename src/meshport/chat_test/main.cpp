@@ -483,36 +483,89 @@ static void saveSettings()
 }
 
 // Line icons for the app row. Drawn with primitives so they stay sharp at 320x240.
-// Widget logos, drawn with integer math only.
-static void drawWifiIcon(int cx, int cy, uint16_t col)
+// Status and widget icons. Blue when on, grey when off. Integer math only.
+static constexpr uint16_t kOnBlue = 0x03FF;
+static constexpr uint16_t kOffGrey = 0x5AEB;
+
+// Points every 15 degrees along the top arc, from 45 to 135 degrees, scaled by 1000.
+static const int kArcCos[7] = {707, 500, 259, 0, -259, -500, -707};
+static const int kArcSin[7] = {707, 866, 966, 1000, 966, 866, 707};
+
+// Thick line: w parallel lines stacked downward.
+static void strokeSeg(int x0, int y0, int x1, int y1, uint16_t col, int w)
 {
-    canvas.fillCircle(cx, cy + 6, 2, col);
-    for (int r = 5; r <= 11; r += 3) {
-        int dx = r * 7 / 10;
-        canvas.drawLine(cx - dx, cy + 6 - dx, cx, cy + 6 - r, col);
-        canvas.drawLine(cx - dx, cy + 7 - dx, cx, cy + 7 - r, col);
-        canvas.drawLine(cx, cy + 6 - r, cx + dx, cy + 6 - dx, col);
-        canvas.drawLine(cx, cy + 7 - r, cx + dx, cy + 7 - dx, col);
+    for (int k = 0; k < w; k++) canvas.drawLine(x0, y0 + k, x1, y1 + k, col);
+}
+
+// Arc of radius r above (cx, cy), drawn as connected segments.
+static void drawTopArc(int cx, int cy, int r, uint16_t col, int w)
+{
+    int px = 0, py = 0;
+    for (int k = 0; k < 7; k++) {
+        int x = cx + r * kArcCos[k] / 1000;
+        int y = cy - r * kArcSin[k] / 1000;
+        if (k > 0) strokeSeg(px, py, x, y, col, w);
+        px = x;
+        py = y;
     }
 }
 
-static void drawGpsIcon(int cx, int cy, uint16_t col, uint16_t hole)
+// WiFi: a dot with three arcs. big = widget size, otherwise pill size.
+static void drawWifi(int cx, int cy, uint16_t col, bool big)
 {
-    canvas.fillCircle(cx, cy - 3, 6, col);
-    canvas.fillTriangle(cx - 5, cy - 1, cx + 5, cy - 1, cx, cy + 8, col);
-    canvas.fillCircle(cx, cy - 3, 2, hole);
+    canvas.fillCircle(cx, cy, big ? 2 : 1, col);
+    if (big) {
+        drawTopArc(cx, cy, 5, col, 2);
+        drawTopArc(cx, cy, 9, col, 2);
+        drawTopArc(cx, cy, 13, col, 2);
+    } else {
+        drawTopArc(cx, cy, 3, col, 1);
+        drawTopArc(cx, cy, 6, col, 1);
+        drawTopArc(cx, cy, 9, col, 1);
+    }
 }
 
-static void drawBtIcon(int cx, int cy, uint16_t col)
+// Satellite: a body, two solar panels, and an antenna. When on, rings pulse from the antenna.
+static void drawGpsIcon(int cx, int cy, uint16_t col, bool on, int frame)
 {
-    canvas.drawLine(cx - 5, cy - 4, cx + 5, cy + 4, col);
-    canvas.drawLine(cx + 5, cy + 4, cx, cy + 8, col);
-    canvas.drawLine(cx, cy + 8, cx, cy - 8, col);
-    canvas.drawLine(cx, cy - 8, cx + 5, cy - 4, col);
-    canvas.drawLine(cx + 5, cy - 4, cx - 5, cy + 4, col);
+    canvas.fillRoundRect(cx - 3, cy - 3, 6, 6, 1, col);
+    canvas.fillRect(cx - 9, cy - 2, 5, 4, col);
+    canvas.fillRect(cx + 4, cy - 2, 5, 4, col);
+    canvas.drawFastHLine(cx - 4, cy, 1, col);
+    canvas.drawFastHLine(cx + 3, cy, 1, col);
+    canvas.fillCircle(cx, cy - 6, 2, col);
+    if (on) {
+        int phase = frame % 2;
+        for (int k = 0; k < 2; k++) {
+            int r = 3 + ((phase + k) % 2) * 3;
+            drawTopArc(cx, cy - 6, r, col, 1);
+        }
+    }
 }
 
-static void drawAppIcon(int idx, int cx, int cy, uint16_t col)
+// Bluetooth: a bubble with the rune inside.
+static void drawBtBubble(int cx, int cy, bool on)
+{
+    canvas.fillCircle(cx, cy, 8, on ? kOnBlue : kOffGrey);
+    uint16_t rune = TFT_WHITE;
+    canvas.drawLine(cx - 3, cy - 4, cx + 3, cy + 2, rune);
+    canvas.drawLine(cx + 3, cy + 2, cx, cy + 5, rune);
+    canvas.drawLine(cx, cy + 5, cx, cy - 5, rune);
+    canvas.drawLine(cx, cy - 5, cx + 3, cy - 2, rune);
+    canvas.drawLine(cx + 3, cy - 2, cx - 3, cy + 4, rune);
+}
+
+// Gear: a toothed ring with a hole. hole = the color behind the icon.
+static void drawGear(int cx, int cy, uint16_t col, uint16_t hole)
+{
+    static const int kToothX[8] = {10, 7, 0, -7, -10, -7, 0, 7};
+    static const int kToothY[8] = {0, 7, 10, 7, 0, -7, -10, -7};
+    canvas.fillCircle(cx, cy, 7, col);
+    for (int k = 0; k < 8; k++) canvas.fillCircle(cx + kToothX[k], cy + kToothY[k], 2, col);
+    canvas.fillCircle(cx, cy, 3, hole);
+}
+
+static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
 {
     switch (idx) {
     case 0: // Public: speech bubble
@@ -547,12 +600,7 @@ static void drawAppIcon(int idx, int cx, int cy, uint16_t col)
         canvas.fillRect(cx + 6, cy - 9, 3, 17, col);
         break;
     case 5: // Settings: gear
-        canvas.drawCircle(cx, cy, 8, col);
-        canvas.drawCircle(cx, cy, 3, col);
-        canvas.fillRect(cx - 1, cy - 11, 3, 4, col);
-        canvas.fillRect(cx - 1, cy + 7, 3, 4, col);
-        canvas.fillRect(cx - 11, cy - 1, 4, 3, col);
-        canvas.fillRect(cx + 7, cy - 1, 4, 3, col);
+        drawGear(cx, cy, col, fill);
         break;
     }
 }
@@ -561,8 +609,9 @@ static void drawHome()
 {
     useFont();
     drawBackdrop();
+    int frame = static_cast<int>(millis() / 180);
 
-    // Status bar: uptime on the left, clock in the center, link pills on the right.
+    // Status bar: uptime on the left, clock in the center, status icons on the right.
     uint16_t strip = backdropAt(3);
     canvas.fillCircle(10, 11, 3, 0x07E0);
     unsigned long mins = millis() / 60000;
@@ -570,17 +619,18 @@ static void drawHome()
     snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
     putText(18, 3, up, theme().fg, strip);
     centerText(160, 3, clockText(), theme().fg, strip);
-    const char *links[3] = {"WiFi", "GPS", "BT"};
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
-    const int linkX[3] = {194, 240, 282};
-    const int linkW[3] = {42, 36, 30};
+    const int pillX[3] = {190, 226, 278};
+    const int pillW[3] = {32, 48, 28};
     for (int i = 0; i < 3; i++) {
-        uint16_t fill = linkOn[i] ? mix(theme().panel, theme().accent, 60) : strip;
-        uint16_t txt = linkOn[i] ? theme().accent : kMuted;
-        canvas.fillRoundRect(linkX[i], 3, linkW[i], 16, 8, fill);
-        canvas.drawRoundRect(linkX[i], 3, linkW[i], 16, 8, linkOn[i] ? theme().accent : kBorder);
-        centerText(linkX[i] + linkW[i] / 2, 3, links[i], txt, fill);
+        uint16_t col = linkOn[i] ? kOnBlue : kOffGrey;
+        canvas.fillRoundRect(pillX[i], 3, pillW[i], 16, 8, strip);
+        canvas.drawRoundRect(pillX[i], 3, pillW[i], 16, 8, col);
     }
+    drawWifi(pillX[0] + 16, 14, linkOn[0] ? kOnBlue : kOffGrey, false);
+    drawGpsIcon(pillX[1] + 12, 11, linkOn[1] ? kOnBlue : kOffGrey, linkOn[1], frame);
+    putText(pillX[1] + 24, 4, "GPS", linkOn[1] ? kOnBlue : kOffGrey, strip);
+    drawBtBubble(pillX[2] + 14, 11, linkOn[2]);
     canvas.drawFastHLine(0, 22, 320, theme().accent);
 
     // Alerts card (left).
@@ -609,7 +659,7 @@ static void drawHome()
     glassCard(12, 96, 138, 16, 5);
     putText(18, 97, "LongFast 906.9 MHz", theme().fg, glassBase());
 
-    // Widget card (right): WiFi, GPS, Bluetooth with their logos and toggles.
+    // Widget card (right): WiFi, GPS, Bluetooth with logos and toggles.
     drawPanel(164, 32, 150, 98);
     putText(174, 35, "WIDGETS", theme().accent, glassBase());
     putText(270, 35, "PWR", kMuted, glassBase());
@@ -618,13 +668,13 @@ static void drawHome()
         int x = 176 + i * 46;
         bool sel = (homeSel == kWidgetFirst + i);
         if (sel) canvas.drawRoundRect(x - 6, 52, 46, 76, 8, theme().accent);
-        uint16_t ic = linkOn[i] ? theme().accent : kMuted;
-        if (i == 0) drawWifiIcon(x + 18, 60, ic);
-        else if (i == 1) drawGpsIcon(x + 18, 60, ic, glassBase());
-        else drawBtIcon(x + 18, 60, ic);
-        centerText(x + 18, 72, names[i], theme().fg, glassBase());
+        uint16_t col = linkOn[i] ? kOnBlue : kOffGrey;
+        if (i == 0) drawWifi(x + 18, 66, col, true);
+        else if (i == 1) drawGpsIcon(x + 18, 64, col, linkOn[1], frame);
+        else drawBtBubble(x + 18, 62, linkOn[2]);
+        centerText(x + 18, 74, names[i], theme().fg, glassBase());
         drawToggle(x, 90, linkOn[i]);
-        centerText(x + 18, 112, linkOn[i] ? "ON" : "OFF", ic, glassBase());
+        centerText(x + 18, 112, linkOn[i] ? "ON" : "OFF", col, glassBase());
     }
     canvas.drawFastVLine(219, 56, 66, kBorder);
     canvas.drawFastVLine(265, 56, 66, kBorder);
@@ -639,11 +689,11 @@ static void drawHome()
         bool sel = (homeSel == i);
         if (sel) {
             canvas.fillCircle(cx, cy, 17, theme().accent);
-            drawAppIcon(i, cx, cy, bgColor());
+            drawAppIcon(i, cx, cy, bgColor(), theme().accent);
         } else {
             canvas.fillCircle(cx, cy, 17, glassBase());
             canvas.drawCircle(cx, cy, 17, theme().accent);
-            drawAppIcon(i, cx, cy, theme().accent);
+            drawAppIcon(i, cx, cy, theme().accent, glassBase());
         }
         centerText(cx, 199, kShort[i], sel ? theme().accent : theme().fg, glassBase());
     }
@@ -1442,6 +1492,11 @@ void loop()
     pollKeyboard();
     pollTrackball();
     pollTouch();
+    static uint32_t lastAnim = 0;
+    if (screen == Screen::Home && gpsOn && millis() - lastAnim > 180) {
+        lastAnim = millis();
+        drawScreen();
+    }
 #endif
 
     if (driver->poll(rx, rssi, snr)) {
