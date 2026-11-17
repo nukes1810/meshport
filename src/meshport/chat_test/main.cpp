@@ -290,6 +290,7 @@ static constexpr int kBackgroundCount = 5;
 static int bgIndex = 0;
 static uint16_t bgColor() { return bgIndex == 0 ? theme().bg : kBackgrounds[bgIndex]; }
 
+static int calStep = 0;
 static bool wifiOn = false;
 static bool btOn = false;
 static bool gpsOn = false;
@@ -789,7 +790,6 @@ struct CalData {
 };
 static CalData cal = {0, 0, 0, 0, 0, 0, {0, 0}};
 static uint16_t calRawX[4], calRawY[4];
-static int calStep = 0;
 
 static void loadCal()
 {
