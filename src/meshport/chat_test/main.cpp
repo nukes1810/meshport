@@ -260,12 +260,12 @@ static int appCount = kAppCount;              // apps in the launcher
 static int appOrder[kAppMax] = {0, 1, 2, 3, 4, 5, 6};   // app ids in launcher order (saved)
 static const char *kAppNames[kAppCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup", "Contacts"};
 
-// The Home row shows kTileCount apps at a time. dockFirst is the first one shown.
-static int dockFirst = 0;
+// The Home area shows one row of kTileCount apps. dockRow is the row on screen.
+static int dockRow = 0;
 static void dockScrollBy(int d)
 {
-    int maxFirst = max(0, appCount - kTileCount);
-    dockFirst = constrain(dockFirst + d, 0, maxFirst);
+    int maxRow = max(0, (appCount - 1) / kTileCount);
+    dockRow = constrain(dockRow + d, 0, maxRow);
 }
 static const char *soonName = "";
 
@@ -1154,7 +1154,9 @@ static void drawHome()
     useFontSmall();
     putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
     for (int i = 0; i < kTileCount; i++) {
-        int id = appOrder[dockFirst + i];
+        int idx = dockRow * kTileCount + i;
+        if (idx >= appCount) break;
+        int id = appOrder[idx];
         int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
         if (sel) {
@@ -1172,10 +1174,10 @@ static void drawHome()
         centerText(cx, 204, kAppNames[id], sel ? theme().accent : theme().fg, glassBase());
         if (id == 0 && unreadChat > 0) drawBadge(cx + 17, cy - 17, unreadChat);
     }
-    // Edge arrows show that the row has more apps off screen.
+    // Up and down arrows show that more rows of apps are above or below.
     uint16_t hint = mix(theme().fg, bgColor(), 110);
-    if (dockFirst > 0) canvas.fillTriangle(2, 178, 6, 174, 6, 182, hint);
-    if (dockFirst + kTileCount < appCount) canvas.fillTriangle(317, 178, 313, 174, 313, 182, hint);
+    if (dockRow > 0) canvas.fillTriangle(314, 150, 310, 156, 318, 156, hint);
+    if (dockRow < (appCount - 1) / kTileCount) canvas.fillTriangle(314, 206, 310, 200, 318, 200, hint);
 }
 
 static void drawPublic()
@@ -2053,10 +2055,11 @@ static void handleKey(int c)
             else if (c == 's') homeSel = (w * 2 < kTileCount) ? w * 2 : kTileCount - 1;
             else if (c == '\r' || c == '\n') activateWidget(w);
         } else {
-            if (c == 'a') { if (homeSel > 0) homeSel--; else dockScrollBy(-1); }
-            else if (c == 'd') { if (homeSel < kTileCount - 1) homeSel++; else dockScrollBy(1); }
-            else if (c == 'w') homeSel = kWidgetFirst + (homeSel / 2 < 2 ? homeSel / 2 : 2);
-            else if (c == '\r' || c == '\n') openTile(appOrder[dockFirst + homeSel]);
+            if (c == 'a') { if (homeSel > 0) homeSel--; }
+            else if (c == 'd') { if (homeSel < kTileCount - 1 && dockRow * kTileCount + homeSel + 1 < appCount) homeSel++; }
+            else if (c == 'w') { if (dockRow > 0) dockScrollBy(-1); else homeSel = kWidgetFirst + (homeSel / 2 < 2 ? homeSel / 2 : 2); }
+            else if (c == 's') dockScrollBy(1);
+            else if (c == '\r' || c == '\n') { int idx = dockRow * kTileCount + homeSel; if (idx < appCount) openTile(appOrder[idx]); }
         }
     } else if (screen == Screen::Public) {
         if (c == '\r' || c == '\n') {
@@ -2357,7 +2360,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
         } else if (sy >= 140 && sy < 194) {
             int idx = constrain(sx / 53, 0, kTileCount - 1);
             homeSel = idx;
-            openTile(appOrder[dockFirst + idx]);
+            if (dockRow * kTileCount + idx < appCount) openTile(appOrder[dockRow * kTileCount + idx]);
         }
     } else if (isSettingsScreen(screen)) {
         char tmp[8][40];
@@ -2436,9 +2439,9 @@ static void pollTouch()
                 while (sy - touchAnchor >= 28) { appScrollBy(-1); touchAnchor += 28; touchDragged = true; }
                 while (touchAnchor - sy >= 28) { appScrollBy(1); touchAnchor -= 28; touchDragged = true; }
             } else if (touchInDock) {
-                // Dragging along the Home row scrolls it one app per 40 px.
-                while (sx - touchAnchorX >= 40) { dockScrollBy(-1); touchAnchorX += 40; touchDragged = true; }
-                while (touchAnchorX - sx >= 40) { dockScrollBy(1); touchAnchorX -= 40; touchDragged = true; }
+                // Dragging up or down the Home area scrolls it one row per 40 px.
+                while (sy - touchAnchor >= 40) { dockScrollBy(-1); touchAnchor += 40; touchDragged = true; }
+                while (touchAnchor - sy >= 40) { dockScrollBy(1); touchAnchor -= 40; touchDragged = true; }
             }
         }
         wasDown = true;
