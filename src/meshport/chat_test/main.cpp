@@ -254,6 +254,14 @@ void loop()
     std::vector<uint8_t> rx;
     float rssi = 0, snr = 0;
     if (driver->poll(rx, rssi, snr)) {
+        // Debug: every frame heard, decodable or not.
+        if (rx.size() >= 16) {
+            Header dbg = unpackHeader(rx.data());
+            Serial.printf("rx %u bytes from %08lX to %08lX (rssi %.0f)\n", (unsigned)rx.size(),
+                          (unsigned long)dbg.from, (unsigned long)dbg.to, rssi);
+        } else {
+            Serial.printf("rx %u bytes (too short)\n", (unsigned)rx.size());
+        }
         uint32_t from = 0;
         std::string text;
         if (openDirectFrame(kChannelKey, sizeof(kChannelKey), me, rx.data(), rx.size(), guard, from, text)) {
