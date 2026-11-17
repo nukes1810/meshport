@@ -216,7 +216,7 @@ void setup()
     s.cr = kLongFastCodingRateDenom;
     s.syncWord = kLongFastSyncWord;
     s.preambleLen = kLongFastPreambleLen;
-    s.powerDbm = 14;
+    s.powerDbm = 10;   // lower TX power reduces current spikes on weak supplies
     s.tcxoVoltage = 1.8f;
     s.useLdo = false;
     if (!driver->begin(s)) {
