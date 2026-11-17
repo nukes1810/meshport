@@ -223,6 +223,8 @@ static void handleLine(String cmd)
 static LGFX_TDeck lcd;
 static LGFX_Sprite canvas(&lcd);
 static std::vector<String> chatLines;
+static std::vector<uint32_t> chatSeq;   // message number for each chat line
+static uint32_t msgSeq = 0;
 static String inputBuf;
 static constexpr int kMaxLines = 12;
 static constexpr int kLineChars = 36;
@@ -346,6 +348,7 @@ static int calStep = 0;
 static bool wifiOn = false;
 static bool btOn = false;
 static bool gpsOn = false;
+static int gpsSats = 0;   // satellites in fix; stays 0 until the GPS module is wired
 static constexpr int kSettingsCount = 6;
 static constexpr int kWidgetFirst = 6;
 
@@ -371,7 +374,11 @@ static void toggleGps()
 static void addLine(const String &s)
 {
     chatLines.push_back(s.substring(0, kLineChars));
-    while (chatLines.size() > kMaxLines) chatLines.erase(chatLines.begin());
+    chatSeq.push_back(++msgSeq);
+    while (chatLines.size() > kMaxLines) {
+        chatLines.erase(chatLines.begin());
+        chatSeq.erase(chatSeq.begin());
+    }
 }
 
 // --- Drawing system -------------------------------------------------------
@@ -704,12 +711,12 @@ static void drawHome()
     uint16_t subBg = subCardBase();
     canvas.fillRoundRect(12, 52, 54, 46, 7, subBg);
     canvas.drawRoundRect(12, 52, 54, 46, 7, mix(theme().accent, subBg, 180));
-    char heard[12];
-    snprintf(heard, sizeof(heard), "%u", (unsigned)nodes.size());
+    char sats[12];
+    snprintf(sats, sizeof(sats), "%d", gpsSats);
     useFontLarge();
-    centerText(39, 57, heard, theme().accent, subBg);
+    centerText(39, 57, sats, theme().accent, subBg);
     useFontSmall();
-    centerText(39, 84, "NODES", mutedText(), subBg);
+    centerText(39, 84, "SATS", mutedText(), subBg);
 
     // Right sub-stack: Frequency & Preset
     canvas.fillRoundRect(70, 52, 80, 21, 6, subBg);
@@ -721,11 +728,11 @@ static void drawHome()
 
     // Bottom Row: Latest Message Preview
     canvas.fillRoundRect(12, 103, 138, 20, 6, subBg);
-    canvas.fillCircle(20, 113, 3, chatLines.empty() ? mutedText() : 0x07E0);
-    String lastMsg = chatLines.empty() ? String("No mesh traffic") : chatLines.back();
-    if (lastMsg.length() > 17) lastMsg = lastMsg.substring(0, 16) + "..";
+    canvas.fillCircle(20, 113, 3, nodes.empty() ? mutedText() : 0x07E0);
+    char heardLine[24];
+    snprintf(heardLine, sizeof(heardLine), "%u nodes heard", (unsigned)nodes.size());
     useFont();
-    putText(28, 105, lastMsg.c_str(), chatLines.empty() ? mutedText() : theme().fg, subBg);
+    putText(28, 105, heardLine, nodes.empty() ? mutedText() : theme().fg, subBg);
 
     // --- Right Card: Quick Radio Toggles (Widgets) ---
     drawPanel(164, 30, 150, 100);
@@ -800,6 +807,15 @@ static void drawPublic()
             canvas.drawRoundRect(6, y, 308, 18, 6, mix(theme().accent, rowBg, 130));
         }
         putText(14, y + 1, chatLines[i].c_str(), isMe ? theme().accent : theme().fg, rowBg);
+
+        // Message number, top right of the bubble.
+        char num[12];
+        snprintf(num, sizeof(num), "#%lu", (unsigned long)chatSeq[i]);
+        useFontSmall();
+        canvas.setTextColor(mutedText(), rowBg);
+        canvas.setCursor(308 - static_cast<int>(canvas.textWidth(num)), y + 5);
+        canvas.print(num);
+        useFont();
     }
 
     // Composer bar.
