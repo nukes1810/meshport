@@ -1190,6 +1190,21 @@ void loop()
         } else {
             Serial.printf("rx %u bytes (too short)\n", (unsigned)rx.size());
         }
+        // Relay: rebroadcast each broadcast packet once, with the hop limit reduced.
+        // Meshtastic senders wait for a neighbor to repeat their broadcast as confirmation.
+        bool fresh = false;
+        if (rx.size() >= 16) {
+            Header rh = unpackHeader(rx.data());
+            fresh = rh.from != myNode && !seenPublic.checkAndInsert(rh.from, rh.id);
+            if (fresh && rh.to == 0xFFFFFFFFu && decrementHopLimit(rh)) {
+                std::vector<uint8_t> out = rx;
+                packHeader(rh, out.data());
+                delay(random(50, 250));
+                if (driver->send(out)) {
+                    Serial.printf("relayed %08lX\n", (unsigned long)rh.id);
+                }
+            }
+        }
         uint32_t from = 0;
         std::string text;
         if (openDirectFrame(kChannelKey, sizeof(kChannelKey), me, rx.data(), rx.size(), guard, from, text)) {
@@ -1199,7 +1214,7 @@ void loop()
             Data d;
             if (openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d) &&
                 d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode &&
-                !seenPublic.checkAndInsert(h.from, h.id)) {
+                fresh) {
                 std::string body(d.payload.begin(), d.payload.end());
                 Serial.printf("[PUBLIC %08lX] %s  (rssi %.0f)\n", (unsigned long)h.from, body.c_str(), rssi);
 #ifdef MESHPORT_TDECK_SCREEN
