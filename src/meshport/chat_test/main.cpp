@@ -35,6 +35,7 @@
 #include "TDeckScreen.h"
 #include <WiFi.h>
 #include <Preferences.h>
+#include <SD.h>
 #endif
 
 using namespace meshport;
@@ -245,7 +246,7 @@ static constexpr int kThemeCount = 4;
 static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
-                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo };
+                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -260,6 +261,8 @@ struct NodeEntry {
     uint32_t firstMs;
     uint32_t lastMs;
     uint32_t count;     // packets heard from this node
+    double lat = 0, lon = 0;
+    bool hasPos = false;   // set from the node's POSITION_APP packets
 };
 static std::vector<NodeEntry> nodes;
 static int nodeSel = 0;   // selected row on the Nodes screen, and the node shown in Node Info
@@ -277,6 +280,61 @@ static void noteNode(uint32_t id, float rssi, float snr)
         }
     }
     if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, snr, millis(), millis(), 1});
+}
+
+// Meshtastic POSITION_APP payload (protobuf Position): latitude_i is field 1 and
+// longitude_i is field 2, both sfixed32 in units of 1e-7 degrees.
+static constexpr uint32_t kPortPositionApp = 3;
+
+static bool readVarint(const std::vector<uint8_t> &b, size_t &i, uint64_t &v)
+{
+    v = 0;
+    for (int shift = 0; shift < 64 && i < b.size(); shift += 7) {
+        uint8_t c = b[i++];
+        v |= static_cast<uint64_t>(c & 0x7F) << shift;
+        if (!(c & 0x80)) return true;
+    }
+    return false;
+}
+
+static void notePosition(uint32_t id, const std::vector<uint8_t> &payload)
+{
+    size_t i = 0;
+    bool gotLat = false, gotLon = false;
+    int32_t latI = 0, lonI = 0;
+    while (i < payload.size()) {
+        uint64_t key = 0;
+        if (!readVarint(payload, i, key)) break;
+        uint32_t field = static_cast<uint32_t>(key >> 3);
+        uint8_t wire = static_cast<uint8_t>(key & 7);
+        if (wire == 5) {                                   // fixed32
+            if (i + 4 > payload.size()) break;
+            uint32_t v = payload[i] | (static_cast<uint32_t>(payload[i + 1]) << 8) |
+                         (static_cast<uint32_t>(payload[i + 2]) << 16) |
+                         (static_cast<uint32_t>(payload[i + 3]) << 24);
+            i += 4;
+            if (field == 1) { latI = static_cast<int32_t>(v); gotLat = true; }
+            else if (field == 2) { lonI = static_cast<int32_t>(v); gotLon = true; }
+        } else if (wire == 0) {                            // varint: skip
+            uint64_t skip = 0;
+            if (!readVarint(payload, i, skip)) break;
+        } else if (wire == 2) {                            // length-delimited: skip
+            uint64_t len = 0;
+            if (!readVarint(payload, i, len)) break;
+            i += static_cast<size_t>(len);
+        } else {
+            break;
+        }
+    }
+    if (!gotLat || !gotLon) return;
+    for (NodeEntry &n : nodes) {
+        if (n.id == id) {
+            n.lat = latI * 1e-7;
+            n.lon = lonI * 1e-7;
+            n.hasPos = true;
+            return;
+        }
+    }
 }
 
 static const Theme &theme() { return kThemes[themeIndex]; }
@@ -569,6 +627,8 @@ static constexpr int kUtcOffsetHours = -5;   // Eastern time; change for another
 static HardwareSerial gpsSerial(1);
 static bool gpsStarted = false;
 static float gpsAltM = 0;
+static double gpsLat = 0, gpsLon = 0;
+static bool gpsHasPos = false;
 static char gpsLine[120];
 static size_t gpsLen = 0;
 
@@ -583,6 +643,16 @@ static int nmeaSplit(char *s, char *fields[], int maxFields)
         }
     }
     return n;
+}
+
+// NMEA coordinates are ddmm.mmmm with a hemisphere letter.
+static double nmeaCoord(const char *v, const char *hemi)
+{
+    double x = atof(v);
+    int deg = static_cast<int>(x / 100.0);
+    double d = deg + (x - deg * 100.0) / 60.0;
+    if (hemi[0] == 'S' || hemi[0] == 'W') d = 0.0 - d;
+    return d;
 }
 
 static void parseNmea(char *s)
@@ -600,10 +670,18 @@ static void parseNmea(char *s)
         int utcMin = (f[1][2] - '0') * 10 + (f[1][3] - '0');
         int localMin = ((utcHour * 60 + utcMin + kUtcOffsetHours * 60) % 1440 + 1440) % 1440;
         setClock(localMin / 60, localMin % 60);
+        gpsLat = nmeaCoord(f[3], f[4]);
+        gpsLon = nmeaCoord(f[5], f[6]);
+        gpsHasPos = true;
     } else if (strcmp(kind, "GGA") == 0) {
         int fix = atoi(f[6]);
         gpsSats = fix > 0 ? atoi(f[7]) : 0;
         gpsAltM = atof(f[9]);
+        gpsHasPos = fix > 0 && f[2][0] != '\0';
+        if (gpsHasPos) {
+            gpsLat = nmeaCoord(f[2], f[3]);
+            gpsLon = nmeaCoord(f[4], f[5]);
+        }
     }
 }
 
@@ -888,7 +966,7 @@ static void drawHome()
     drawPanel(6, 136, 308, 96);
     useFontSmall();
     putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
-    static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Setup"};
+    static const char *kShort[kTileCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup"};
     for (int i = 0; i < kTileCount; i++) {
         int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
@@ -1012,6 +1090,186 @@ static void formatAgo(uint32_t ms, char *out, size_t n)
     else snprintf(out, n, "%luh ago", (unsigned long)(s / 3600));
 }
 
+// --- Map: raw RGB565 tiles on the SD card ----------------------------------
+// Tiles live at /maps/<zoom>/<x>/<y>.bin, each 256x256 little-endian RGB565 pixels
+// (made by tools/maps/png_to_rgb565.py). Coordinates are Web Mercator, the usual
+// slippy-map scheme. The SD chip select (GPIO 39) is unverified on the T-Deck Plus.
+static constexpr int kSdCsPin = 39;
+static constexpr int kTilePx = 256;
+static constexpr int kMapY = 24;            // map area starts below the header
+static constexpr int kMapW = 320;
+static constexpr int kMapH = 216;
+static constexpr int kTileSlots = 4;
+static constexpr int kMaxZoom = 18;
+static bool sdTried = false;
+static bool sdReady = false;
+static int mapZoom = 15;
+static double mapCx = 0, mapCy = 0;         // map center in world pixels at mapZoom
+static bool mapFollow = true;               // keep the map centered on my GPS position
+
+struct TileSlot {
+    int z = -1, x = 0, y = 0;
+    uint16_t *px = nullptr;
+    uint32_t used = 0;
+};
+static TileSlot tileSlots[kTileSlots];
+
+static double mercX(double lon, int z)
+{
+    return (lon + 180.0) / 360.0 * kTilePx * static_cast<double>(1 << z);
+}
+
+static double mercY(double lat, int z)
+{
+    const double kMaxLatRad = 1.4844;       // about 85.05 degrees, the Web Mercator limit
+    double r = lat * 3.14159265358979 / 180.0;
+    if (r > kMaxLatRad) r = kMaxLatRad;
+    if (r < 0.0 - kMaxLatRad) r = 0.0 - kMaxLatRad;
+    return (1.0 - log(tan(r) + 1.0 / cos(r)) / 3.14159265358979) / 2.0 * kTilePx *
+           static_cast<double>(1 << z);
+}
+
+// Pixels of one tile, loaded from the SD card into a small cache. Null if missing.
+static uint16_t *tileData(int z, int x, int y)
+{
+    for (TileSlot &s : tileSlots) {
+        if (s.px && s.z == z && s.x == x && s.y == y) {
+            s.used = millis();
+            return s.px;
+        }
+    }
+    TileSlot *slot = &tileSlots[0];
+    for (TileSlot &s : tileSlots) {
+        if (!s.px) { slot = &s; break; }
+        if (s.used < slot->used) slot = &s;
+    }
+    if (!slot->px) {
+        slot->px = static_cast<uint16_t *>(ps_malloc(kTilePx * kTilePx * 2));
+        if (!slot->px) return nullptr;
+    }
+    slot->z = -1;
+    char path[48];
+    snprintf(path, sizeof(path), "/maps/%d/%d/%d.bin", z, x, y);
+    File f = SD.open(path);
+    if (!f) return nullptr;
+    size_t got = f.read(reinterpret_cast<uint8_t *>(slot->px), kTilePx * kTilePx * 2);
+    f.close();
+    if (got != static_cast<size_t>(kTilePx * kTilePx * 2)) return nullptr;
+    slot->z = z;
+    slot->x = x;
+    slot->y = y;
+    slot->used = millis();
+    return slot->px;
+}
+
+// Paints one tile whose top-left corner is at screen (sx, sy), clipped to the map area.
+static void drawTile(int z, int x, int y, int sx, int sy)
+{
+    int x0 = sx < 0 ? 0 : sx;
+    int x1 = sx + kTilePx > kMapW ? kMapW : sx + kTilePx;
+    if (x1 <= x0) return;
+    uint16_t *px = tileData(z, x, y);
+    if (!px) {
+        int y0 = sy < kMapY ? kMapY : sy;
+        int y1 = sy + kTilePx > kMapY + kMapH ? kMapY + kMapH : sy + kTilePx;
+        if (y1 > y0) canvas.fillRect(x0, y0, x1 - x0, y1 - y0, mix(bgColor(), TFT_WHITE, 20));
+        return;
+    }
+    for (int r = 0; r < kTilePx; r++) {
+        int yy = sy + r;
+        if (yy < kMapY || yy >= kMapY + kMapH) continue;
+        canvas.pushImage(x0, yy, x1 - x0, 1, px + r * kTilePx + (x0 - sx));
+    }
+}
+
+static int mapScreenX(double wx) { return static_cast<int>(wx - (mapCx - kMapW / 2.0)); }
+static int mapScreenY(double wy) { return kMapY + static_cast<int>(wy - (mapCy - kMapH / 2.0)); }
+
+static void mapPan(double dx, double dy)
+{
+    mapFollow = false;
+    mapCx += dx;
+    mapCy += dy;
+}
+
+static void mapZoomBy(int dz)
+{
+    int nz = mapZoom + dz;
+    if (nz < 0 || nz > kMaxZoom) return;
+    double scale = dz > 0 ? 2.0 : 0.5;
+    mapCx *= scale;
+    mapCy *= scale;
+    mapZoom = nz;
+}
+
+static void drawMap()
+{
+    if (!sdTried) {
+        sdTried = true;
+        sdReady = SD.begin(kSdCsPin, loraSpi, 4000000);
+        Serial.printf("sd card %s\n", sdReady ? "ready" : "not found");
+    }
+    useFont();
+    drawBackdrop();
+    drawHeader("Map");
+    if (!sdReady) {
+        centerText(160, 100, "No SD card with maps", theme().fg, backdropAt(100));
+        centerText(160, 122, "Put tiles in /maps and reboot", mutedText(), backdropAt(122));
+        return;
+    }
+    if (mapFollow && gpsHasPos) {
+        mapCx = mercX(gpsLon, mapZoom);
+        mapCy = mercY(gpsLat, mapZoom);
+    }
+
+    double left = mapCx - kMapW / 2.0;
+    double top = mapCy - kMapH / 2.0;
+    int n = 1 << mapZoom;
+    int tx0 = static_cast<int>(floor(left / kTilePx));
+    int tx1 = static_cast<int>(floor((left + kMapW) / kTilePx));
+    int ty0 = static_cast<int>(floor(top / kTilePx));
+    int ty1 = static_cast<int>(floor((top + kMapH) / kTilePx));
+    for (int ty = ty0; ty <= ty1; ty++) {
+        if (ty < 0 || ty >= n) continue;
+        for (int tx = tx0; tx <= tx1; tx++) {
+            int wrapped = ((tx % n) + n) % n;
+            drawTile(mapZoom, wrapped, ty, static_cast<int>(tx * kTilePx - left),
+                     static_cast<int>(kMapY + ty * kTilePx - top));
+        }
+    }
+
+    // Other nodes that have sent a position.
+    useFontSmall();
+    for (const NodeEntry &nd : nodes) {
+        if (!nd.hasPos) continue;
+        int sx = mapScreenX(mercX(nd.lon, mapZoom));
+        int sy = mapScreenY(mercY(nd.lat, mapZoom));
+        if (sx < 0 || sx >= kMapW || sy < kMapY || sy >= kMapY + kMapH) continue;
+        canvas.fillCircle(sx, sy, 4, theme().accent);
+        canvas.drawCircle(sx, sy, 4, TFT_BLACK);
+        char label[8];
+        snprintf(label, sizeof(label), "%04lX", (unsigned long)(nd.id & 0xFFFF));
+        canvas.setTextColor(TFT_WHITE, TFT_BLACK);
+        canvas.setCursor(sx + 6, sy - 4);
+        canvas.print(label);
+    }
+
+    // My position.
+    if (gpsHasPos) {
+        int sx = mapScreenX(mercX(gpsLon, mapZoom));
+        int sy = mapScreenY(mercY(gpsLat, mapZoom));
+        canvas.fillCircle(sx, sy, 6, TFT_WHITE);
+        canvas.fillCircle(sx, sy, 4, kOnBlue);
+    }
+
+    // Status bar along the bottom of the map.
+    canvas.fillRect(0, kMapY + kMapH - 14, kMapW, 14, TFT_BLACK);
+    char status[48];
+    snprintf(status, sizeof(status), "z%d  %s%s", mapZoom, gpsHasPos ? "GPS fix" : "no GPS fix",
+             mapFollow ? "  follow" : "  panned");
+    putText(4, kMapY + kMapH - 13, status, TFT_WHITE, TFT_BLACK);
+}
+
 // Node Info: everything we know about the selected node.
 static void drawNodeInfo()
 {
@@ -1034,18 +1292,22 @@ static void drawNodeInfo()
     formatAgo(millis() - n.firstMs, firstText, sizeof(firstText));
     formatAgo(millis() - n.lastMs, lastText, sizeof(lastText));
 
-    const char *labels[7] = {"Node ID", "Short name", "Signal (RSSI)", "SNR", "Packets heard",
-                             "First heard", "Last heard"};
-    const char *values[7] = {idText, shortText, rssiText, snrText, countText, firstText, lastText};
-    for (int i = 0; i < 7; i++) {
-        int y = 40 + i * 24;
+    char posText[32];
+    if (n.hasPos) snprintf(posText, sizeof(posText), "%.4f, %.4f", n.lat, n.lon);
+    else snprintf(posText, sizeof(posText), "not received");
+
+    const char *labels[8] = {"Node ID", "Short name", "Signal (RSSI)", "SNR", "Packets heard",
+                             "First heard", "Last heard", "Position"};
+    const char *values[8] = {idText, shortText, rssiText, snrText, countText, firstText, lastText, posText};
+    for (int i = 0; i < 8; i++) {
+        int y = 38 + i * 22;
         putText(20, y, labels[i], mutedText(), glassBase());
         canvas.setTextColor(theme().accent, glassBase());
         canvas.setCursor(308 - static_cast<int>(canvas.textWidth(values[i])), y);
         canvas.print(values[i]);
     }
     useFontSmall();
-    centerText(160, 206, "Long name and position: not decoded yet", mutedText(), glassBase());
+    centerText(160, 216, "Long name: not decoded yet", mutedText(), glassBase());
 }
 
 static bool isSettingsScreen(Screen s)
@@ -1314,6 +1576,7 @@ static void drawScreen()
     case Screen::Public: drawPublic(); break;
     case Screen::Nodes: drawNodes(); break;
     case Screen::NodeInfo: drawNodeInfo(); break;
+    case Screen::Map: drawMap(); break;
     case Screen::Settings:
     case Screen::SettingsDevice:
     case Screen::SettingsLora:
@@ -1331,6 +1594,12 @@ static void openTile(int i)
 {
     switch (i) {
     case 0: screen = Screen::Public; unreadChat = 0; break;
+    case 1:
+        screen = Screen::Map;
+        mapFollow = true;
+        mapCx = mercX(0.0, mapZoom);
+        mapCy = mercY(0.0, mapZoom);
+        break;
     case 2: screen = Screen::Nodes; break;
     case 5: screen = Screen::Settings; settingsSel = 0; break;
     case 3:
@@ -1491,6 +1760,15 @@ static void handleKey(int c)
         if (c == 'q' || c == 8 || c == 127) goHome();
     } else if (screen == Screen::NodeInfo) {
         if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') screen = Screen::Nodes;
+    } else if (screen == Screen::Map) {
+        if (c == 'w') mapPan(0, -kTilePx / 8);
+        else if (c == 's') mapPan(0, kTilePx / 8);
+        else if (c == 'a') mapPan(-kTilePx / 8, 0);
+        else if (c == 'd') mapPan(kTilePx / 8, 0);
+        else if (c == '+' || c == '=') mapZoomBy(1);
+        else if (c == '-') mapZoomBy(-1);
+        else if (c == '\r' || c == '\n') mapFollow = true;
+        if (c == 'q' || c == 8 || c == 127) goHome();
     } else {
         if (c == 'q' || c == 8 || c == 127) goHome();
     }
@@ -1934,8 +2212,11 @@ void loop()
         } else {
             Header h{};
             Data d;
-            if (openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d) &&
-                d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode &&
+            bool decoded = openFrame(kChannelKey, sizeof(kChannelKey), rx.data(), rx.size(), h, d);
+#ifdef MESHPORT_TDECK_SCREEN
+            if (decoded && d.portnum == kPortPositionApp) notePosition(h.from, d.payload);
+#endif
+            if (decoded && d.portnum == kPortTextMessage && h.to == 0xFFFFFFFFu && h.from != myNode &&
                 fresh) {
                 std::string body(d.payload.begin(), d.payload.end());
                 Serial.printf("[PUBLIC %08lX] %s  (rssi %.0f)\n", (unsigned long)h.from, body.c_str(), rssi);
