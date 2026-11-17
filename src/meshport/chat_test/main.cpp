@@ -36,6 +36,7 @@
 #include <WiFi.h>
 #include <Preferences.h>
 #include <SD.h>
+#include <time.h>
 #endif
 
 using namespace meshport;
@@ -246,7 +247,8 @@ static constexpr int kThemeCount = 4;
 static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
-                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map };
+                    SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map,
+                    SettingsWifi, WifiPassword };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -412,6 +414,16 @@ static uint16_t bgColor() { return bgIndex == 0 ? theme().bg : kBackgrounds[bgIn
 
 static int calStep = 0;
 static bool wifiOn = false;
+static String wifiSsid, wifiPass;           // saved network
+static String wifiPickSsid, wifiPassBuf;    // network chosen on the password screen
+static constexpr int kWifiListMax = 4;      // strongest networks shown in the list
+static String wifiNames[kWifiListMax];
+static int wifiRssis[kWifiListMax];
+static bool wifiSecure[kWifiListMax];
+static int wifiFound = 0;
+static bool wifiNtpStarted = false;
+static uint32_t wifiNtpMs = 0;
+static void saveWifiCreds();
 static bool btOn = false;
 static bool gpsOn = false;
 static int gpsSats = 0;   // satellites in fix; stays 0 until the GPS module is wired
@@ -421,7 +433,15 @@ static constexpr int kWidgetFirst = 6;
 static void toggleWifi()
 {
     wifiOn = !wifiOn;
-    WiFi.mode(wifiOn ? WIFI_STA : WIFI_OFF);
+    if (wifiOn) {
+        WiFi.mode(WIFI_STA);
+        if (wifiSsid.length()) WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+    } else {
+        WiFi.disconnect(true);
+        WiFi.mode(WIFI_OFF);
+        wifiNtpStarted = false;
+    }
+    saveWifiCreds();
     Serial.printf("wifi %s\n", wifiOn ? "on" : "off");
 }
 
@@ -602,6 +622,9 @@ static void loadSettings()
     themeIndex = p.getInt("theme", themeIndex);
     bgIndex = p.getInt("bg", bgIndex);
     gpsOn = p.getBool("gpsOn", gpsOn);
+    wifiSsid = p.getString("wifiSsid", "");
+    wifiPass = p.getString("wifiPass", "");
+    wifiOn = p.getBool("wifiOn", wifiOn);
     p.end();
 }
 
@@ -616,6 +639,103 @@ static void saveSettings()
     p.putInt("bg", bgIndex);
     p.putBool("gpsOn", gpsOn);
     p.end();
+}
+
+// --- WiFi: scan, join with a password, and sync the clock over NTP ---------
+// The saved password is stored in the device's flash in plain text.
+static void saveWifiCreds()
+{
+    Preferences p;
+    p.begin("meshport", false);
+    p.putString("wifiSsid", wifiSsid);
+    p.putString("wifiPass", wifiPass);
+    p.putBool("wifiOn", wifiOn);
+    p.end();
+}
+
+static void connectWifi(const String &ssid, const String &pass)
+{
+    wifiSsid = ssid;
+    wifiPass = pass;
+    wifiOn = true;
+    wifiNtpStarted = false;
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+    saveWifiCreds();
+    Serial.printf("wifi joining %s\n", ssid.c_str());
+}
+
+static void forgetWifi()
+{
+    wifiSsid = "";
+    wifiPass = "";
+    WiFi.disconnect(true);
+    wifiNtpStarted = false;
+    saveWifiCreds();
+}
+
+// Keeps the strongest kWifiListMax networks found in the scan.
+static void scanWifi()
+{
+    if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
+    int n = WiFi.scanNetworks();
+    wifiFound = 0;
+    for (int i = 0; i < n; i++) {
+        String name = WiFi.SSID(i);
+        if (name.length() == 0) continue;
+        int rssi = WiFi.RSSI(i);
+        int slot = -1;
+        if (wifiFound < kWifiListMax) {
+            slot = wifiFound++;
+        } else {
+            int weakest = 0;
+            for (int k = 1; k < kWifiListMax; k++) {
+                if (wifiRssis[k] < wifiRssis[weakest]) weakest = k;
+            }
+            if (rssi > wifiRssis[weakest]) slot = weakest;
+        }
+        if (slot < 0) continue;
+        wifiNames[slot] = name;
+        wifiRssis[slot] = rssi;
+        wifiSecure[slot] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
+    }
+    WiFi.scanDelete();
+    Serial.printf("wifi scan: %d networks\n", wifiFound);
+}
+
+static String wifiStatusText()
+{
+    if (!wifiOn) return "Off";
+    if (WiFi.status() == WL_CONNECTED) return String("Joined ") + WiFi.SSID();
+    if (wifiSsid.length() == 0) return "No network saved";
+    return "Joining " + wifiSsid;
+}
+
+// Joins the saved network at boot, and sets the clock from NTP once connected.
+static void pollWifi()
+{
+    static bool started = false;
+    if (!started) {
+        started = true;
+        if (wifiOn) {
+            WiFi.mode(WIFI_STA);
+            if (wifiSsid.length()) WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+        }
+    }
+    if (!wifiOn || WiFi.status() != WL_CONNECTED) return;
+    if (!wifiNtpStarted) {
+        // Eastern time with US daylight saving. Change the zone string for another place.
+        configTzTime("EST5EDT,M3.2.0,M11.1.0", "pool.ntp.org", "time.google.com");
+        wifiNtpStarted = true;
+        wifiNtpMs = 0;
+    }
+    if (wifiNtpMs != 0 && millis() - wifiNtpMs < 60000) return;
+    struct tm tm;
+    if (getLocalTime(&tm, 0) && tm.tm_year > 100) {
+        setClock(tm.tm_hour, tm.tm_min);
+        wifiNtpMs = millis();
+        Serial.printf("clock set over NTP %02d:%02d\n", tm.tm_hour, tm.tm_min);
+    }
 }
 
 // --- GPS receiver: NMEA over UART (satellites, altitude, and time) ----------
@@ -1271,6 +1391,29 @@ static void drawMap()
     putText(4, kMapY + kMapH - 13, status, TFT_WHITE, TFT_BLACK);
 }
 
+// Password entry for the chosen network. Typed characters show as dots.
+static void drawWifiPassword()
+{
+    useFont();
+    drawBackdrop();
+    drawHeader("Wi-Fi password");
+    glassCard(8, 40, 304, 58, 10, false);
+    useFontSmall();
+    putText(20, 50, "Network", mutedText(), glassBase());
+    useFont();
+    putText(20, 66, wifiPickSsid.c_str(), theme().fg, glassBase());
+
+    glassCard(8, 110, 304, 36, 8, true);
+    String dots = "";
+    for (size_t k = 0; k < wifiPassBuf.length() && k < 28; k++) dots += '*';
+    if ((millis() / 500) % 2 == 0) dots += '_';
+    putText(18, 120, dots.c_str(), theme().fg, glassBase());
+
+    useFontSmall();
+    centerText(160, 160, "Type the password, then press Enter to join", mutedText(), glassBase());
+    centerText(160, 176, "Backspace on an empty box goes back", mutedText(), glassBase());
+}
+
 // Node Info: everything we know about the selected node.
 static void drawNodeInfo()
 {
@@ -1314,7 +1457,7 @@ static void drawNodeInfo()
 static bool isSettingsScreen(Screen s)
 {
     return s == Screen::Settings || s == Screen::SettingsDevice || s == Screen::SettingsLora ||
-           s == Screen::SettingsGps || s == Screen::SettingsDisplay;
+           s == Screen::SettingsGps || s == Screen::SettingsDisplay || s == Screen::SettingsWifi;
 }
 
 static int buildSettingItems(Screen s, char items[][40])
@@ -1325,9 +1468,22 @@ static int buildSettingItems(Screen s, char items[][40])
         snprintf(items[1], 40, "LoRa Radio");
         snprintf(items[2], 40, "GPS Receiver");
         snprintf(items[3], 40, "Display & Theme");
-        snprintf(items[4], 40, "Calibrate Touchscreen");
-        snprintf(items[5], 40, "Back to Home");
-        return 6;
+        snprintf(items[4], 40, "WiFi Network");
+        snprintf(items[5], 40, "Calibrate Touchscreen");
+        snprintf(items[6], 40, "Back to Home");
+        return 7;
+    case Screen::SettingsWifi: {
+        snprintf(items[0], 40, "Status: %s", wifiStatusText().c_str());
+        int n = 1;
+        for (int k = 0; k < wifiFound; k++) {
+            snprintf(items[n++], 40, "%s: %d dBm%s", wifiNames[k].c_str(), wifiRssis[k],
+                     wifiSecure[k] ? " *" : "");
+        }
+        snprintf(items[n++], 40, "Rescan networks");
+        snprintf(items[n++], 40, "Forget saved network");
+        snprintf(items[n++], 40, "Back");
+        return n;
+    }
     case Screen::SettingsDevice:
         snprintf(items[0], 40, "Node ID: %08lX", (unsigned long)myNode);
         snprintf(items[1], 40, "Role: Client");
@@ -1371,6 +1527,7 @@ static void drawSettingsScreen(Screen s)
     case Screen::SettingsLora:    title = "LoRa Radio"; break;
     case Screen::SettingsGps:     title = "GPS Receiver"; break;
     case Screen::SettingsDisplay: title = "Display & Theme"; break;
+    case Screen::SettingsWifi:    title = "WiFi Network"; break;
     default: break;
     }
     drawHeader(title);
@@ -1582,7 +1739,9 @@ static void drawScreen()
     case Screen::SettingsDevice:
     case Screen::SettingsLora:
     case Screen::SettingsGps:
-    case Screen::SettingsDisplay: drawSettingsScreen(screen); break;
+    case Screen::SettingsDisplay:
+    case Screen::SettingsWifi: drawSettingsScreen(screen); break;
+    case Screen::WifiPassword: drawWifiPassword(); break;
     }
     canvas.pushSprite(&lcd, 0, 0);
 }
@@ -1628,7 +1787,8 @@ static void openNodeInfo(int i)
 static void backFrom(Screen s)
 {
     settingsSel = 0;
-    if (s == Screen::NodeInfo) screen = Screen::Nodes;
+    if (s == Screen::WifiPassword) screen = Screen::SettingsWifi;
+    else if (s == Screen::NodeInfo) screen = Screen::Nodes;
     else if (s == Screen::Nodes) goHome();
     else if (s == Screen::Settings) goHome();
     else if (isSettingsScreen(s)) screen = Screen::Settings;
@@ -1644,9 +1804,32 @@ static void activateSettingItem(Screen s, int i)
         else if (i == 1) screen = Screen::SettingsLora;
         else if (i == 2) screen = Screen::SettingsGps;
         else if (i == 3) screen = Screen::SettingsDisplay;
-        else if (i == 4) { calStep = 0; screen = Screen::Calibrate; }
+        else if (i == 4) { screen = Screen::SettingsWifi; settingsSel = 0; }
+        else if (i == 5) { calStep = 0; screen = Screen::Calibrate; }
         else goHome();
         break;
+    case Screen::SettingsWifi: {
+        int networkRows = wifiFound;
+        if (i == 0) {
+            // Status row: nothing to activate.
+        } else if (i <= networkRows) {
+            int k = i - 1;
+            if (wifiSecure[k]) {
+                wifiPickSsid = wifiNames[k];
+                wifiPassBuf = "";
+                screen = Screen::WifiPassword;
+            } else {
+                connectWifi(wifiNames[k], "");
+            }
+        } else if (i == networkRows + 1) {
+            scanWifi();
+        } else if (i == networkRows + 2) {
+            forgetWifi();
+        } else if (i == networkRows + 3) {
+            backFrom(s);
+        }
+        break;
+    }
     case Screen::SettingsDevice:
         if (i == 4) backFrom(s);
         break;
@@ -1691,6 +1874,7 @@ static void handleKey(int c)
     Serial.printf("key 0x%02X\n", c);
     // Trackball codes 0x80-0x84 (up, down, left, right, center).
     const bool track = (c >= 0x80 && c <= 0x84);
+    if (track && screen == Screen::WifiPassword) return;   // the trackball must not type into the password
     if (track && screen == Screen::Public) {
         // Trackball never types into the chat: left leaves, center sends or leaves when empty.
         if (c == 0x80 && inputBuf.length() == 0) {
@@ -1761,6 +1945,18 @@ static void handleKey(int c)
         if (c == 'q' || c == 8 || c == 127) goHome();
     } else if (screen == Screen::NodeInfo) {
         if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') screen = Screen::Nodes;
+    } else if (screen == Screen::WifiPassword) {
+        if (c == '\r' || c == '\n') {
+            connectWifi(wifiPickSsid, wifiPassBuf);
+            wifiPassBuf = "";
+            screen = Screen::SettingsWifi;
+            settingsSel = 0;
+        } else if (c == 8 || c == 127) {
+            if (wifiPassBuf.length()) wifiPassBuf.remove(wifiPassBuf.length() - 1);
+            else screen = Screen::SettingsWifi;
+        } else if (c >= 32 && c < 127) {
+            wifiPassBuf += static_cast<char>(c);
+        }
     } else if (screen == Screen::Map) {
         if (c == 'w') mapPan(0, -kTilePx / 8);
         else if (c == 's') mapPan(0, kTilePx / 8);
@@ -2154,6 +2350,7 @@ void loop()
     pollTrackball();
     pollTouch();
     pollGps();
+    pollWifi();
     if (screen == Screen::Spectrum && specLive && millis() - specSweepMs > 150) {
         sweepSpectrum();
         drawScreen();
