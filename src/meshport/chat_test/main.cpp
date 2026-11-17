@@ -345,7 +345,7 @@ static uint16_t mix(uint16_t a, uint16_t b, int t)
 // Background: a soft vertical gradient, lit from the top.
 static void drawBackdrop()
 {
-    uint16_t top = mix(bgColor(), theme().accent, 40);
+    uint16_t top = mix(bgColor(), theme().accent, 14);
     uint16_t bottom = bgColor();
     for (int y = 0; y < 240; y++) {
         canvas.drawFastHLine(0, y, 320, mix(top, bottom, y * 255 / 239));
@@ -356,14 +356,15 @@ static void drawBackdrop()
 // LovyanGFX has no alpha blending, so the glass is faked with layered colors.
 static void glassCard(int x, int y, int w, int h, int r)
 {
-    uint16_t base = mix(theme().panel, TFT_WHITE, 18);
-    uint16_t sheen = mix(theme().panel, TFT_WHITE, 46);
+    // Dark translucent base, a faint sheen on the top third, and a thin accent rim.
+    uint16_t base = mix(theme().panel, bgColor(), 110);
+    uint16_t sheen = mix(theme().panel, TFT_WHITE, 28);
     canvas.fillRoundRect(x, y, w, h, r, base);
-    int sheenH = h / 2 - 1;
+    int sheenH = h / 3;
     if (sheenH > 2) {
         canvas.fillRoundRect(x + 2, y + 2, w - 4, sheenH, r > 2 ? r - 2 : 1, sheen);
     }
-    canvas.drawRoundRect(x, y, w, h, r, mix(theme().panel, TFT_WHITE, 110));
+    canvas.drawRoundRect(x, y, w, h, r, mix(theme().accent, bgColor(), 110));
 }
 
 static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
@@ -483,7 +484,7 @@ static void drawHome()
     centerText(114, 37, snr, theme().accent, mix(theme().panel, theme().accent, 60));
 
     String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
-    if (lastMsg.length() > 17) lastMsg = lastMsg.substring(0, 17);
+    if (lastMsg.length() > 11) lastMsg = lastMsg.substring(0, 11);
     char heard[12];
     snprintf(heard, sizeof(heard), "%u", (unsigned)nodes.size());
     glassCard(12, 56, 138, 16, 5);
@@ -520,7 +521,7 @@ static void drawHome()
     putText(16, 142, "APPS", theme().accent, theme().panel);
     putText(206, 142, "Trackball / Tap", kMuted, theme().panel);
     for (int i = 0; i < kTileCount; i++) {
-        int cx = 26 + i * 53, cy = 170;
+        int cx = 26 + i * 53, cy = 176;
         bool sel = (homeSel == i);
         if (sel) {
             canvas.fillCircle(cx, cy, 17, theme().accent);
@@ -530,7 +531,8 @@ static void drawHome()
             canvas.drawCircle(cx, cy, 17, theme().accent);
             drawAppIcon(i, cx, cy, theme().accent);
         }
-        centerText(cx, 192, kTiles[i], sel ? theme().accent : theme().fg, theme().panel);
+        static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Set"};
+        centerText(cx, 199, kShort[i], sel ? theme().accent : theme().fg, theme().panel);
     }
 }
 
