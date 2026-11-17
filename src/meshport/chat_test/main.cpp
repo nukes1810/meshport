@@ -248,7 +248,7 @@ static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
                     SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay, NodeInfo, Map,
-                    SettingsWifi, WifiPassword, AppGrid };
+                    SettingsWifi, WifiPassword, AppGrid, Contacts };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -282,6 +282,56 @@ struct NodeEntry {
 };
 static std::vector<NodeEntry> nodes;
 static int nodeSel = 0;   // selected row on the Nodes screen, and the node shown in Node Info
+
+// Saved contacts: node IDs the user keeps. Stored in flash.
+static std::vector<uint32_t> contactIds;
+static int contactSel = 0;
+static bool openedFromContacts = false;   // Node Info was opened from Contacts
+
+static bool isContact(uint32_t id)
+{
+    for (uint32_t c : contactIds) if (c == id) return true;
+    return false;
+}
+
+static void loadContacts()
+{
+    Preferences p;
+    p.begin("meshport", true);
+    size_t bytes = p.getBytesLength("contacts");
+    contactIds.assign(bytes / sizeof(uint32_t), 0);
+    if (!contactIds.empty()) p.getBytes("contacts", contactIds.data(), contactIds.size() * sizeof(uint32_t));
+    p.end();
+}
+
+static void saveContacts()
+{
+    Preferences p;
+    p.begin("meshport", false);
+    if (contactIds.empty()) p.remove("contacts");
+    else p.putBytes("contacts", contactIds.data(), contactIds.size() * sizeof(uint32_t));
+    p.end();
+}
+
+static void toggleContact(uint32_t id)
+{
+    for (size_t i = 0; i < contactIds.size(); i++) {
+        if (contactIds[i] == id) {
+            contactIds.erase(contactIds.begin() + static_cast<long>(i));
+            saveContacts();
+            return;
+        }
+    }
+    contactIds.push_back(id);
+    saveContacts();
+}
+
+// Index of a heard node with this ID, or -1.
+static int nodeIndexOf(uint32_t id)
+{
+    for (size_t i = 0; i < nodes.size(); i++) if (nodes[i].id == id) return static_cast<int>(i);
+    return -1;
+}
 static constexpr size_t kMaxNodes = 16;
 
 static void noteNode(uint32_t id, float rssi, float snr)
@@ -1592,7 +1642,50 @@ static void drawNodeInfo()
         canvas.print(values[i]);
     }
     useFontSmall();
-    centerText(160, 216, "Long name: not decoded yet", mutedText(), glassBase());
+    bool saved = isContact(n.id);
+    centerText(160, 206, saved ? "Saved as contact: press C to remove" : "Press C to save as contact",
+               saved ? theme().accent : theme().fg, glassBase());
+    centerText(160, 222, "Long name: not decoded yet", mutedText(), glassBase());
+}
+
+static int contactTop() { return contactSel >= 6 ? contactSel - 5 : 0; }
+
+static void drawContactList()
+{
+    useFont();
+    drawBackdrop();
+    char title[24];
+    snprintf(title, sizeof(title), "Contacts (%u)", (unsigned)contactIds.size());
+    drawHeader(title);
+
+    if (contactIds.empty()) {
+        drawPanel(16, 68, 288, 96);
+        centerText(160, 86, "No saved contacts yet", theme().fg, glassBase());
+        useFontSmall();
+        centerText(160, 110, "Open a node and press C to save it", mutedText(), glassBase());
+        centerText(160, 130, "Saved contacts stay on this device", mutedText(), glassBase());
+        return;
+    }
+
+    int top = contactTop();
+    uint32_t now = millis();
+    for (int row = 0; row < 6 && top + row < static_cast<int>(contactIds.size()); row++) {
+        size_t i = static_cast<size_t>(top + row);
+        int y = 30 + row * 33;
+        glassCard(6, y, 308, 28, 7, static_cast<int>(i) == contactSel);
+
+        uint16_t badgeBg = mix(theme().accent, glassBase(), 200);
+        canvas.fillRoundRect(12, y + 4, 78, 20, 5, badgeBg);
+        char id[12];
+        snprintf(id, sizeof(id), "%08lX", (unsigned long)contactIds[i]);
+        centerText(51, y + 6, id, theme().accent, badgeBg);
+
+        int ni = nodeIndexOf(contactIds[i]);
+        char ago[24] = "not heard yet";
+        if (ni >= 0) formatAgo(now - nodes[ni].lastMs, ago, sizeof(ago));
+        useFontSmall();
+        putText(98, y + 9, ago, ni >= 0 ? theme().fg : mutedText(), glassBase());
+    }
 }
 
 static bool isSettingsScreen(Screen s)
@@ -1884,6 +1977,7 @@ static void drawScreen()
     case Screen::SettingsWifi: drawSettingsScreen(screen); break;
     case Screen::WifiPassword: drawWifiPassword(); break;
     case Screen::AppGrid: drawAppGrid(); break;
+    case Screen::Contacts: drawContactList(); break;
     }
     canvas.pushSprite(&lcd, 0, 0);
 }
@@ -1903,7 +1997,7 @@ static void openTile(int i)
         mapCy = mercY(0.0, mapZoom);
         break;
     case 2: screen = Screen::Nodes; break;
-    case 6: screen = Screen::Nodes; break;   // Contacts: shows the node list until direct-message contacts exist
+    case 6: screen = Screen::Contacts; contactSel = 0; break;
     case 5: screen = Screen::Settings; settingsSel = 0; break;
     case 3:
         screen = Screen::Spectrum;
@@ -1924,7 +2018,18 @@ static void openNodeInfo(int i)
 {
     if (i < 0 || i >= static_cast<int>(nodes.size())) return;
     nodeSel = i;
+    openedFromContacts = false;
     screen = Screen::NodeInfo;
+}
+
+static void openContact(size_t i)
+{
+    if (i >= contactIds.size()) return;
+    int ni = nodeIndexOf(contactIds[i]);
+    if (ni < 0) return;   // not heard yet: nothing to show
+    contactSel = static_cast<int>(i);
+    openNodeInfo(ni);
+    openedFromContacts = true;
 }
 
 static void backFrom(Screen s)
@@ -1932,8 +2037,8 @@ static void backFrom(Screen s)
     settingsSel = 0;
     if (s == Screen::WifiPassword) screen = Screen::SettingsWifi;
     else if (s == Screen::AppGrid) { appMoving = false; saveSettings(); goHome(); }
-    else if (s == Screen::NodeInfo) screen = Screen::Nodes;
-    else if (s == Screen::Nodes) goHome();
+    else if (s == Screen::NodeInfo) screen = openedFromContacts ? Screen::Contacts : Screen::Nodes;
+    else if (s == Screen::Nodes || s == Screen::Contacts) goHome();
     else if (s == Screen::Settings) goHome();
     else if (isSettingsScreen(s)) screen = Screen::Settings;
     else goHome();
@@ -2097,8 +2202,20 @@ static void handleKey(int c)
             else if (c == '\r' || c == '\n') openNodeInfo(nodeSel);
         }
         if (c == 'q' || c == 8 || c == 127) goHome();
+    } else if (screen == Screen::Contacts) {
+        int n = static_cast<int>(contactIds.size());
+        if (n > 0) {
+            if (c == 'w') contactSel = (contactSel + n - 1) % n;
+            else if (c == 's') contactSel = (contactSel + 1) % n;
+            else if (c == '\r' || c == '\n') openContact(static_cast<size_t>(contactSel));
+        }
+        if (c == 'q' || c == 8 || c == 127) goHome();
     } else if (screen == Screen::NodeInfo) {
-        if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') screen = Screen::Nodes;
+        if (c == 'c' && nodeSel >= 0 && nodeSel < static_cast<int>(nodes.size())) {
+            toggleContact(nodes[nodeSel].id);
+        } else if (c == 'q' || c == 8 || c == 127 || c == '\r' || c == '\n') {
+            screen = openedFromContacts ? Screen::Contacts : Screen::Nodes;
+        }
     } else if (screen == Screen::AppGrid) {
         if (c == 'a') appStep(-1);
         else if (c == 'd') appStep(1);
@@ -2379,6 +2496,11 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             appMoving = false;
             openTile(appOrder[pos]);
         }
+    } else if (screen == Screen::Contacts && sy >= 30 && sy < 30 + 6 * 33) {
+        int idx = contactTop() + (sy - 30) / 33;
+        if (idx < static_cast<int>(contactIds.size())) openContact(static_cast<size_t>(idx));
+    } else if (screen == Screen::NodeInfo && sy >= 196 && sy < 214) {
+        if (nodeSel >= 0 && nodeSel < static_cast<int>(nodes.size())) toggleContact(nodes[nodeSel].id);
     } else if (screen == Screen::Nodes && sy >= 30 && sy < 30 + 6 * 33) {
         int idx = nodeTop() + (sy - 30) / 33;
         if (idx < static_cast<int>(nodes.size())) openNodeInfo(idx);
@@ -2490,6 +2612,7 @@ void setup()
     // T-Deck peripheral power (LoRa radio). Must be HIGH before the radio responds.
 #ifdef MESHPORT_TDECK_SCREEN
     loadSettings();
+    loadContacts();
 #endif
     pinMode(CHAT_POWER_PIN, OUTPUT);
     digitalWrite(CHAT_POWER_PIN, CHAT_POWER_ON);
