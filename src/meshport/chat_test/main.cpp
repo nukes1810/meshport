@@ -421,9 +421,11 @@ static String wifiNames[kWifiListMax];
 static int wifiRssis[kWifiListMax];
 static bool wifiSecure[kWifiListMax];
 static int wifiFound = 0;
+static bool wifiScanning = false;
 static bool wifiNtpStarted = false;
 static uint32_t wifiNtpMs = 0;
 static void saveWifiCreds();
+static void startWifiScan();
 static bool btOn = false;
 static bool gpsOn = false;
 static int gpsSats = 0;   // satellites in fix; stays 0 until the GPS module is wired
@@ -435,7 +437,14 @@ static void toggleWifi()
     wifiOn = !wifiOn;
     if (wifiOn) {
         WiFi.mode(WIFI_STA);
-        if (wifiSsid.length()) WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+        if (wifiSsid.length()) {
+            WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
+        } else {
+            // Nothing saved yet: go straight to the network list and scan.
+            startWifiScan();
+            screen = Screen::SettingsWifi;
+            settingsSel = 0;
+        }
     } else {
         WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
@@ -674,11 +683,18 @@ static void forgetWifi()
     saveWifiCreds();
 }
 
-// Keeps the strongest kWifiListMax networks found in the scan.
-static void scanWifi()
+// Starts a background scan. pollWifi collects the results when it finishes.
+static void startWifiScan()
 {
     if (WiFi.getMode() == WIFI_OFF) WiFi.mode(WIFI_STA);
-    int n = WiFi.scanNetworks();
+    WiFi.scanDelete();
+    WiFi.scanNetworks(true);
+    wifiScanning = true;
+}
+
+// Keeps the strongest kWifiListMax networks found in the scan.
+static void collectWifiScan(int n)
+{
     wifiFound = 0;
     for (int i = 0; i < n; i++) {
         String name = WiFi.SSID(i);
@@ -700,11 +716,13 @@ static void scanWifi()
         wifiSecure[slot] = WiFi.encryptionType(i) != WIFI_AUTH_OPEN;
     }
     WiFi.scanDelete();
+    wifiScanning = false;
     Serial.printf("wifi scan: %d networks\n", wifiFound);
 }
 
 static String wifiStatusText()
 {
+    if (wifiScanning) return "Scanning...";
     if (!wifiOn) return "Off";
     if (WiFi.status() == WL_CONNECTED) return String("Joined ") + WiFi.SSID();
     if (wifiSsid.length() == 0) return "No network saved";
@@ -721,6 +739,11 @@ static void pollWifi()
             WiFi.mode(WIFI_STA);
             if (wifiSsid.length()) WiFi.begin(wifiSsid.c_str(), wifiPass.c_str());
         }
+    }
+    if (wifiScanning) {
+        int n = WiFi.scanComplete();
+        if (n >= 0) collectWifiScan(n);
+        else if (n == WIFI_SCAN_FAILED) wifiScanning = false;
     }
     if (!wifiOn || WiFi.status() != WL_CONNECTED) return;
     if (!wifiNtpStarted) {
@@ -1404,13 +1427,14 @@ static void drawWifiPassword()
     putText(20, 66, wifiPickSsid.c_str(), theme().fg, glassBase());
 
     glassCard(8, 110, 304, 36, 8, true);
-    String dots = "";
-    for (size_t k = 0; k < wifiPassBuf.length() && k < 28; k++) dots += '*';
-    if ((millis() / 500) % 2 == 0) dots += '_';
-    putText(18, 120, dots.c_str(), theme().fg, glassBase());
+    String shown = wifiPassBuf;
+    if (shown.length() > 28) shown = shown.substring(shown.length() - 28);
+    if ((millis() / 500) % 2 == 0) shown += '_';
+    putText(18, 120, shown.c_str(), theme().fg, glassBase());
 
     useFontSmall();
     centerText(160, 160, "Type the password, then press Enter to join", mutedText(), glassBase());
+    centerText(160, 150, "The password shows as you type", mutedText(), glassBase());
     centerText(160, 176, "Backspace on an empty box goes back", mutedText(), glassBase());
 }
 
@@ -1822,7 +1846,7 @@ static void activateSettingItem(Screen s, int i)
                 connectWifi(wifiNames[k], "");
             }
         } else if (i == networkRows + 1) {
-            scanWifi();
+            if (!wifiScanning) startWifiScan();
         } else if (i == networkRows + 2) {
             forgetWifi();
         } else if (i == networkRows + 3) {
@@ -1931,7 +1955,7 @@ static void handleKey(int c)
             if (c == 'w') settingsSel = (settingsSel + n - 1) % n;
             else if (c == 's') settingsSel = (settingsSel + 1) % n;
             else if (c == '\r' || c == '\n') activateSettingItem(screen, settingsSel);
-            else if (c == 'q' || c == 8 || c == 127) backFrom(screen);
+            else if (c == 'q' || c == 'a' || c == 8 || c == 127) backFrom(screen);
         }
     } else if (screen == Screen::Spectrum && (c == 'r' || c == '\r' || c == '\n')) {
         specLive = !specLive;
@@ -2351,6 +2375,11 @@ void loop()
     pollTouch();
     pollGps();
     pollWifi();
+    static uint32_t lastWifiUi = 0;
+    if ((screen == Screen::SettingsWifi || screen == Screen::WifiPassword) && millis() - lastWifiUi > 500) {
+        lastWifiUi = millis();
+        drawScreen();
+    }
     if (screen == Screen::Spectrum && specLive && millis() - specSweepMs > 150) {
         sweepSpectrum();
         drawScreen();
