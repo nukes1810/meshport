@@ -34,6 +34,7 @@
 #include <Wire.h>
 #include "TDeckScreen.h"
 #include <WiFi.h>
+#include <Preferences.h>
 #endif
 
 using namespace meshport;
@@ -203,6 +204,7 @@ static void handleLine(String cmd)
 // On-device UI: home screen with app tiles, public chat, nodes, settings, and themes.
 // Keys: w/a/s/d move, Enter opens or activates, q or Backspace (empty input) goes back.
 static LGFX_TDeck lcd;
+static LGFX_Sprite canvas(&lcd);
 static std::vector<String> chatLines;
 static String inputBuf;
 static constexpr int kMaxLines = 12;
@@ -222,7 +224,7 @@ static const Theme kThemes[] = {
 static constexpr int kThemeCount = 4;
 static int themeIndex = 0;
 
-enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon };
+enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -291,7 +293,7 @@ static uint16_t bgColor() { return bgIndex == 0 ? theme().bg : kBackgrounds[bgIn
 static bool wifiOn = false;
 static bool btOn = false;
 static bool gpsOn = false;
-static constexpr int kSettingsCount = 6;
+static constexpr int kSettingsCount = 7;
 static constexpr int kWidgetFirst = 6;
 
 static void toggleWifi()
@@ -321,61 +323,61 @@ static void addLine(const String &s)
 
 static void drawHeader(const String &title)
 {
-    lcd.fillRect(0, 0, 320, 18, theme().accent);
-    lcd.setTextColor(bgColor(), theme().accent);
-    lcd.setTextSize(2);
-    lcd.setCursor(4, 1);
-    lcd.print(title);
+    canvas.fillRect(0, 0, 320, 18, theme().accent);
+    canvas.setTextColor(bgColor(), theme().accent);
+    canvas.setTextSize(2);
+    canvas.setCursor(4, 1);
+    canvas.print(title);
 }
 
 static void drawPanel(int x, int y, int w, int h)
 {
-    lcd.fillRoundRect(x, y, w, h, 10, theme().panel);
-    lcd.drawRoundRect(x, y, w, h, 10, theme().accent);
-    lcd.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, theme().accent);
+    canvas.fillRoundRect(x, y, w, h, 10, theme().panel);
+    canvas.drawRoundRect(x, y, w, h, 10, theme().accent);
+    canvas.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, theme().accent);
 }
 
 static void drawToggle(int x, int y, bool on)
 {
-    lcd.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : 0x2104);
-    lcd.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
+    canvas.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : 0x2104);
+    canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
 }
 
 static void drawHome()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
 
     // Status bar
-    lcd.setTextSize(2);
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(4, 2);
-    lcd.print("meshport");
+    canvas.setTextSize(2);
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(4, 2);
+    canvas.print("meshport");
     char node[24];
     snprintf(node, sizeof(node), "node %08lX", (unsigned long)myNode);
-    lcd.setTextSize(1);
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setCursor(200, 8);
-    lcd.print(node);
-    lcd.drawFastHLine(0, 22, 320, theme().accent);
+    canvas.setTextSize(1);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setCursor(200, 8);
+    canvas.print(node);
+    canvas.drawFastHLine(0, 22, 320, theme().accent);
 
     // Status card
     drawPanel(4, 30, 150, 100);
-    lcd.setTextSize(2);
-    lcd.setTextColor(theme().fg, theme().panel);
-    lcd.setCursor(14, 42);
-    lcd.print("Mesh online");
+    canvas.setTextSize(2);
+    canvas.setTextColor(theme().fg, theme().panel);
+    canvas.setCursor(14, 42);
+    canvas.print("Mesh online");
     char up[32];
     snprintf(up, sizeof(up), "Up %lu min", (unsigned long)(millis() / 60000));
-    lcd.setTextSize(1);
-    lcd.setTextColor(theme().accent, theme().panel);
-    lcd.setCursor(14, 72);
-    lcd.print(up);
+    canvas.setTextSize(1);
+    canvas.setTextColor(theme().accent, theme().panel);
+    canvas.setCursor(14, 72);
+    canvas.print(up);
     char heard[32];
     snprintf(heard, sizeof(heard), "Nodes heard: %u", (unsigned)nodes.size());
-    lcd.setCursor(14, 86);
-    lcd.print(heard);
-    lcd.setCursor(14, 100);
-    lcd.print("LongFast 906.9 MHz");
+    canvas.setCursor(14, 86);
+    canvas.print(heard);
+    canvas.setCursor(14, 100);
+    canvas.print("LongFast 906.9 MHz");
 
     // Widget panel: WiFi, GPS, Bluetooth toggles
     drawPanel(162, 30, 154, 100);
@@ -383,128 +385,129 @@ static void drawHome()
     bool states[3] = {wifiOn, gpsOn, btOn};
     for (int i = 0; i < 3; i++) {
         int x = 170 + i * 50;
-        lcd.setTextSize(1);
-        lcd.setTextColor(theme().fg, theme().panel);
-        lcd.setCursor(x, 42);
-        lcd.print(names[i]);
+        canvas.setTextSize(1);
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(x, 42);
+        canvas.print(names[i]);
         bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) lcd.drawRoundRect(x - 4, 66, 44, 26, 8, TFT_WHITE);
+        if (sel) canvas.drawRoundRect(x - 4, 66, 44, 26, 8, TFT_WHITE);
         drawToggle(x, 70, states[i]);
-        lcd.setTextColor(theme().accent, theme().panel);
-        lcd.setCursor(x, 96);
-        lcd.print(states[i] ? "ON" : "off");
+        canvas.setTextColor(theme().accent, theme().panel);
+        canvas.setCursor(x, 96);
+        canvas.print(states[i] ? "ON" : "off");
     }
 
     // App row
     for (int i = 0; i < kTileCount; i++) {
         int cx = 26 + i * 53, cy = 165;
         bool sel = (homeSel == i);
-        lcd.fillCircle(cx, cy, 18, sel ? theme().accent : theme().panel);
-        lcd.drawCircle(cx, cy, 18, theme().accent);
-        lcd.setTextSize(2);
-        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
-        lcd.setCursor(cx - 6, cy - 8);
-        lcd.print(kTiles[i][0]);
-        lcd.setTextSize(1);
-        lcd.setTextColor(theme().fg, bgColor());
-        lcd.setCursor(cx - static_cast<int>(strlen(kTiles[i])) * 3, 190);
-        lcd.print(kTiles[i]);
+        canvas.fillCircle(cx, cy, 18, sel ? theme().accent : theme().panel);
+        canvas.drawCircle(cx, cy, 18, theme().accent);
+        canvas.setTextSize(2);
+        canvas.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
+        canvas.setCursor(cx - 6, cy - 8);
+        canvas.print(kTiles[i][0]);
+        canvas.setTextSize(1);
+        canvas.setTextColor(theme().fg, bgColor());
+        canvas.setCursor(cx - static_cast<int>(strlen(kTiles[i])) * 3, 190);
+        canvas.print(kTiles[i]);
     }
 
-    lcd.setTextSize(1);
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 226);
-    lcd.print("w s a d move   Enter opens");
+    canvas.setTextSize(1);
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 226);
+    canvas.print("w s a d move   Enter opens");
 }
 
 static void drawPublic()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader("Public chat");
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setTextSize(2);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(2);
     for (size_t i = 0; i < chatLines.size(); i++) {
-        lcd.setCursor(0, 22 + static_cast<int>(i) * 16);
-        lcd.print(chatLines[i]);
+        canvas.setCursor(0, 22 + static_cast<int>(i) * 16);
+        canvas.print(chatLines[i]);
     }
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 220);
-    lcd.print("> ");
-    lcd.print(inputBuf.substring(0, kLineChars - 2));
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 220);
+    canvas.print("> ");
+    canvas.print(inputBuf.substring(0, kLineChars - 2));
 }
 
 static void drawNodes()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     char title[24];
     snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setTextSize(2);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(2);
     uint32_t now = millis();
     for (size_t i = 0; i < nodes.size(); i++) {
         char line[32];
         snprintf(line, sizeof(line), "%08lX %4.0fdBm %lus", (unsigned long)nodes[i].id, nodes[i].rssi,
                  (unsigned long)((now - nodes[i].lastMs) / 1000));
-        lcd.setCursor(0, 22 + static_cast<int>(i) * 16);
-        lcd.print(line);
+        canvas.setCursor(0, 22 + static_cast<int>(i) * 16);
+        canvas.print(line);
     }
     if (nodes.empty()) {
-        lcd.setCursor(0, 22);
-        lcd.print("No nodes heard yet");
+        canvas.setCursor(0, 22);
+        canvas.print("No nodes heard yet");
     }
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 220);
-    lcd.print("q: back");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 220);
+    canvas.print("q: back");
 }
 
 static void drawSettings()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader("Settings");
-    lcd.setTextSize(2);
+    canvas.setTextSize(2);
     char items[kSettingsCount][32];
     snprintf(items[0], sizeof(items[0]), "Theme: %s", kThemes[themeIndex].name);
     snprintf(items[1], sizeof(items[1]), "Background: %s", kBackgroundNames[bgIndex]);
     snprintf(items[2], sizeof(items[2]), "WiFi: %s", wifiOn ? "on" : "off");
     snprintf(items[3], sizeof(items[3]), "Bluetooth: %s", btOn ? "on" : "off");
     snprintf(items[4], sizeof(items[4]), "GPS: %s", gpsOn ? "on" : "off");
-    snprintf(items[5], sizeof(items[5]), "Back");
+    snprintf(items[5], sizeof(items[5]), "Calibrate touch");
+    snprintf(items[6], sizeof(items[6]), "Back");
     for (int i = 0; i < kSettingsCount; i++) {
         bool sel = (i == settingsSel);
-        int y = 40 + i * 30;
-        lcd.fillRoundRect(4, y, 312, 26, 6, sel ? theme().accent : bgColor());
-        lcd.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
-        lcd.setCursor(12, y + 4);
-        lcd.print(items[i]);
+        int y = 36 + i * 26;
+        canvas.fillRoundRect(4, y, 312, 22, 6, sel ? theme().accent : bgColor());
+        canvas.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
+        canvas.setCursor(12, y + 3);
+        canvas.print(items[i]);
     }
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 222);
-    lcd.print("Enter: change  q: back");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 222);
+    canvas.print("Enter: change  q: back");
 }
 
 static void drawSoon()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader(soonName);
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setTextSize(2);
-    lcd.setCursor(0, 60);
-    lcd.print("Coming in a later build");
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 220);
-    lcd.print("q: back");
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(2);
+    canvas.setCursor(0, 60);
+    canvas.print("Coming in a later build");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 220);
+    canvas.print("q: back");
 }
 
 static void drawSpectrum()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader("Spectrum 902-928 MHz");
     if (!specScanned) {
-        lcd.setTextColor(theme().fg, bgColor());
-        lcd.setTextSize(2);
-        lcd.setCursor(0, 100);
-        lcd.print("Press Enter to scan");
+        canvas.setTextColor(theme().fg, bgColor());
+        canvas.setTextSize(2);
+        canvas.setCursor(0, 100);
+        canvas.print("Press Enter to scan");
     } else {
         for (int i = 0; i < kSpecPoints; i++) {
             int level = specDb[i];
@@ -512,13 +515,13 @@ static void drawSpectrum()
             if (level > -50) level = -50;
             int h = (level + 120) * 170 / 70;
             int x = 4 + i * 6;
-            lcd.fillRect(x, 220 - h, 5, h, theme().accent);
+            canvas.fillRect(x, 220 - h, 5, h, theme().accent);
         }
     }
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setTextSize(1);
-    lcd.setCursor(0, 226);
-    lcd.print("Enter: scan   q: back");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setTextSize(1);
+    canvas.setCursor(0, 226);
+    canvas.print("Enter: scan   q: back");
 }
 
 static int signalY(float rssi)
@@ -531,43 +534,65 @@ static int signalY(float rssi)
 
 static void drawSignal()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader("Signal");
-    lcd.drawLine(0, 30, 319, 30, theme().fg);
-    lcd.drawLine(0, 220, 319, 220, theme().fg);
+    canvas.drawLine(0, 30, 319, 30, theme().fg);
+    canvas.drawLine(0, 220, 319, 220, theme().fg);
     for (size_t i = 1; i < rssiHist.size(); i++) {
         int x0 = static_cast<int>((i - 1) * 5), x1 = static_cast<int>(i * 5);
-        lcd.drawLine(x0, signalY(rssiHist[i - 1]), x1, signalY(rssiHist[i]), theme().accent);
+        canvas.drawLine(x0, signalY(rssiHist[i - 1]), x1, signalY(rssiHist[i]), theme().accent);
     }
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setTextSize(1);
-    lcd.setCursor(0, 226);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(1);
+    canvas.setCursor(0, 226);
     char line[48];
     float last = rssiHist.empty() ? 0 : rssiHist.back();
     snprintf(line, sizeof(line), "last RSSI %.0f dBm  SNR %.1f dB  q: back", last, lastSnr);
-    lcd.print(line);
+    canvas.print(line);
 }
 
 static void drawContacts()
 {
-    lcd.fillScreen(bgColor());
+    canvas.fillScreen(bgColor());
     drawHeader("Contacts");
-    lcd.setTextColor(theme().fg, bgColor());
-    lcd.setTextSize(2);
-    lcd.setCursor(0, 60);
-    lcd.print("Encrypted contacts");
-    lcd.setCursor(0, 84);
-    lcd.print("come next, after the");
-    lcd.setCursor(0, 108);
-    lcd.print("two-device test.");
-    lcd.setTextColor(theme().accent, bgColor());
-    lcd.setCursor(0, 220);
-    lcd.print("q: back");
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(2);
+    canvas.setCursor(0, 60);
+    canvas.print("Encrypted contacts");
+    canvas.setCursor(0, 84);
+    canvas.print("come next, after the");
+    canvas.setCursor(0, 108);
+    canvas.print("two-device test.");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(0, 220);
+    canvas.print("q: back");
+}
+
+static void drawCalibrate()
+{
+    canvas.fillScreen(bgColor());
+    drawHeader("Touch calibration");
+    static const int kTargetX[4] = {12, 307, 12, 307};
+    static const int kTargetY[4] = {12, 12, 227, 227};
+    for (int i = 0; i < 4; i++) {
+        uint16_t col = (i == calStep) ? theme().accent : theme().fg;
+        canvas.drawLine(kTargetX[i] - 8, kTargetY[i], kTargetX[i] + 8, kTargetY[i], col);
+        canvas.drawLine(kTargetX[i], kTargetY[i] - 8, kTargetX[i], kTargetY[i] + 8, col);
+    }
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setTextSize(2);
+    canvas.setCursor(40, 100);
+    canvas.print("Tap the + marks");
+    canvas.setCursor(40, 124);
+    char step[24];
+    snprintf(step, sizeof(step), "point %d of 4", calStep + 1);
+    canvas.print(step);
 }
 
 static void drawScreen()
 {
     switch (screen) {
+    case Screen::Calibrate: drawCalibrate(); break;
     case Screen::Spectrum: drawSpectrum(); break;
     case Screen::Signal: drawSignal(); break;
     case Screen::Soon: drawContacts(); break;
@@ -576,8 +601,8 @@ static void drawScreen()
     case Screen::Nodes: drawNodes(); break;
     case Screen::Settings: drawSettings(); break;
     }
+    canvas.pushSprite(&lcd, 0, 0);
 }
-
 static void goHome()
 {
     screen = Screen::Home;
@@ -610,6 +635,7 @@ static void activateSetting(int i)
     case 2: toggleWifi(); break;
     case 3: toggleBt(); break;
     case 4: toggleGps(); break;
+    case 5: calStep = 0; screen = Screen::Calibrate; break;
     default: goHome(); break;
     }
 }
@@ -754,11 +780,96 @@ static void setupTouch()
     else Serial.println("no touch controller found (standard T-Deck has none)");
 }
 
+// Touch calibration: four taps on the + marks give the mapping from raw touch to screen.
+struct CalData {
+    int32_t L, R, T, B;
+    uint8_t swap;
+    uint8_t valid;
+    uint8_t pad[2];
+};
+static CalData cal = {0, 0, 0, 0, 0, 0, {0, 0}};
+static uint16_t calRawX[4], calRawY[4];
+static int calStep = 0;
+
+static void loadCal()
+{
+    Preferences p;
+    p.begin("meshport", true);
+    if (p.getBytesLength("cal") == sizeof(cal)) p.getBytes("cal", &cal, sizeof(cal));
+    p.end();
+}
+
+static void saveCal()
+{
+    Preferences p;
+    p.begin("meshport", false);
+    p.putBytes("cal", &cal, sizeof(cal));
+    p.end();
+}
+
+static void touchToScreen(uint16_t x, uint16_t y, int &sx, int &sy)
+{
+    if (!cal.valid) {
+        sx = constrain(319 - static_cast<int>(y), 0, 319);
+        sy = constrain(static_cast<int>(x), 0, 239);
+        return;
+    }
+    int32_t v = cal.swap ? static_cast<int32_t>(y) : static_cast<int32_t>(x);
+    int32_t w = cal.swap ? static_cast<int32_t>(x) : static_cast<int32_t>(y);
+    int32_t dx = cal.R - cal.L;
+    if (dx == 0) dx = 1;
+    int32_t dy = cal.B - cal.T;
+    if (dy == 0) dy = 1;
+    sx = constrain(12 + static_cast<int>((v - cal.L) * 295 / dx), 0, 319);
+    sy = constrain(12 + static_cast<int>((w - cal.T) * 215 / dy), 0, 239);
+}
+
+static void computeCal()
+{
+    // Taps: 0 top-left, 1 top-right, 2 bottom-left, 3 bottom-right.
+    int32_t colDeltaX = static_cast<int32_t>(calRawX[1]) + calRawX[3] - calRawX[0] - calRawX[2];
+    int32_t colDeltaY = static_cast<int32_t>(calRawY[1]) + calRawY[3] - calRawY[0] - calRawY[2];
+    if (colDeltaX < 0) colDeltaX = -colDeltaX;
+    if (colDeltaY < 0) colDeltaY = -colDeltaY;
+    if (colDeltaY > colDeltaX) {
+        cal.swap = 1;
+        cal.L = (static_cast<int32_t>(calRawY[0]) + calRawY[2]) / 2;
+        cal.R = (static_cast<int32_t>(calRawY[1]) + calRawY[3]) / 2;
+        cal.T = (static_cast<int32_t>(calRawX[0]) + calRawX[1]) / 2;
+        cal.B = (static_cast<int32_t>(calRawX[2]) + calRawX[3]) / 2;
+    } else {
+        cal.swap = 0;
+        cal.L = (static_cast<int32_t>(calRawX[0]) + calRawX[2]) / 2;
+        cal.R = (static_cast<int32_t>(calRawX[1]) + calRawX[3]) / 2;
+        cal.T = (static_cast<int32_t>(calRawY[0]) + calRawY[1]) / 2;
+        cal.B = (static_cast<int32_t>(calRawY[2]) + calRawY[3]) / 2;
+    }
+    cal.valid = 1;
+    saveCal();
+    Serial.printf("touch calibrated swap=%u L=%ld R=%ld T=%ld B=%ld\n", cal.swap, (long)cal.L, (long)cal.R,
+                  (long)cal.T, (long)cal.B);
+}
+
+static void recordCalTap(uint16_t x, uint16_t y)
+{
+    static const int kTargetX[4] = {12, 307, 12, 307};
+    static const int kTargetY[4] = {12, 12, 227, 227};
+    (void)kTargetX;
+    (void)kTargetY;
+    calRawX[calStep] = x;
+    calRawY[calStep] = y;
+    calStep++;
+    if (calStep >= 4) {
+        calStep = 0;
+        computeCal();
+        screen = Screen::Settings;
+    }
+}
+
 static void handleTouchTap(uint16_t x, uint16_t y)
 {
-    // Touch is in portrait (240 wide, 320 tall). The landscape screen is that rotated 90 degrees clockwise.
-    int sx = constrain(319 - static_cast<int>(y), 0, 319);
-    int sy = constrain(static_cast<int>(x), 0, 239);
+    int sx = 0, sy = 0;
+    touchToScreen(x, y, sx, sy);
     Serial.printf("tap screen x=%d y=%d\n", sx, sy);
     if (screen == Screen::Home) {
         if (sy >= 30 && sy < 130 && sx >= 162) {
@@ -771,8 +882,8 @@ static void handleTouchTap(uint16_t x, uint16_t y)
             openTile(idx);
         }
     } else if (screen == Screen::Settings) {
-        if (sy >= 40 && sy < 40 + kSettingsCount * 30) {
-            int i = constrain((sy - 40) / 30, 0, kSettingsCount - 1);
+        if (sy >= 36 && sy < 36 + kSettingsCount * 26) {
+            int i = constrain((sy - 36) / 26, 0, kSettingsCount - 1);
             settingsSel = i;
             activateSetting(i);
         } else if (sy < 18) {
@@ -806,7 +917,12 @@ static void pollTouch()
             Serial.printf("touch bytes %02X %02X %02X %02X %02X %02X %02X %02X\n", p[0], p[1], p[2], p[3],
                           p[4], p[5], p[6], p[7]);
             Serial.printf("touch raw x=%u y=%u\n", x, y);
-            handleTouchTap(x, y);
+            if (screen == Screen::Calibrate) {
+                recordCalTap(x, y);
+                drawScreen();
+            } else {
+                handleTouchTap(x, y);
+            }
         }
         wasDown = true;
     } else {
@@ -872,6 +988,12 @@ void setup()
     setupTouch();
     lcd.init();
     lcd.setRotation(1);
+    canvas.setPsram(true);
+    if (!canvas.createSprite(320, 240)) {
+        canvas.setPsram(false);
+        if (!canvas.createSprite(320, 240)) Serial.println("draw buffer FAILED");
+    }
+    loadCal();
     addLine("Enter on a tile to open it");
     drawScreen();
 #endif
