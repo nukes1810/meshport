@@ -34,6 +34,18 @@ int psaHkdfFailStep();
 int psaHkdfFailStatus();
 }
 
+#ifdef MESHPORT_BOARD_HELTEC_V3
+// Heltec WiFi LoRa 32 V3 (ESP32-S3 + SX1262). Vext (GPIO 36) is active LOW.
+#define CHAT_LORA_SCK 9
+#define CHAT_LORA_MISO 11
+#define CHAT_LORA_MOSI 10
+#define CHAT_LORA_CS 8
+#define CHAT_LORA_RESET 12
+#define CHAT_LORA_DIO1 14
+#define CHAT_LORA_BUSY 13
+#define CHAT_POWER_PIN 36
+#define CHAT_POWER_ON LOW
+#else
 // Meshtastic T-Deck pins (variants/esp32s3/t-deck/variant.h).
 #define CHAT_LORA_SCK 40
 #define CHAT_LORA_MISO 38
@@ -42,6 +54,9 @@ int psaHkdfFailStatus();
 #define CHAT_LORA_RESET 17
 #define CHAT_LORA_DIO1 45
 #define CHAT_LORA_BUSY 13
+#define CHAT_POWER_PIN 10
+#define CHAT_POWER_ON HIGH
+#endif
 
 // Default LongFast key (public). Direct messages are end-to-end encrypted on top of it.
 static const uint8_t kChannelKey[16] = {0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
@@ -154,8 +169,8 @@ void setup()
     Serial.println("meshport chat");
 
     // T-Deck peripheral power (LoRa radio). Must be HIGH before the radio responds.
-    pinMode(10, OUTPUT);
-    digitalWrite(10, HIGH);
+    pinMode(CHAT_POWER_PIN, OUTPUT);
+    digitalWrite(CHAT_POWER_PIN, CHAT_POWER_ON);
     delay(200);
 
     loraSpi.begin(CHAT_LORA_SCK, CHAT_LORA_MISO, CHAT_LORA_MOSI, CHAT_LORA_CS);

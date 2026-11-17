@@ -47,3 +47,21 @@ jobs:
           name: meshport-chat
           path: out/*
           if-no-files-found: error
+
+      - name: Build chat for Heltec V3
+        run: pio run -e meshport_chat_heltec
+
+      - name: Collect Heltec flash images
+        run: |
+          mkdir -p out-heltec
+          cp .pio/build/meshport_chat_heltec/bootloader.bin out-heltec/
+          cp .pio/build/meshport_chat_heltec/partitions.bin out-heltec/
+          cp .pio/build/meshport_chat_heltec/firmware.bin out-heltec/
+          ls -lh out-heltec
+
+      - name: Upload Heltec chat firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: meshport-chat-heltec
+          path: out-heltec/*
+          if-no-files-found: error

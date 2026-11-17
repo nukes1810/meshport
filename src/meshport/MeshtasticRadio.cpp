@@ -24,7 +24,10 @@ bool MeshtasticRadio::begin(const RadioSettings &s)
     // Settings verified on T-Deck hardware: no DIO2 RF switch,
     // 140 mA current limit, boosted RX gain.
     radio_.setCurrentLimit(140);
-    radio_.setDio2AsRfSwitch(false);
+#ifndef MESHPORT_DIO2_RF_SWITCH
+#define MESHPORT_DIO2_RF_SWITCH 0
+#endif
+    radio_.setDio2AsRfSwitch(MESHPORT_DIO2_RF_SWITCH != 0);
     radio_.setRxBoostedGainMode(true);
     radio_.setDio1Action(onDio1);
     return startReceive();
