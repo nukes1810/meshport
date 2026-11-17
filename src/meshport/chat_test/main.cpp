@@ -222,7 +222,7 @@ static const Theme kThemes[] = {
     {"Dark", TFT_BLACK, TFT_WHITE, TFT_CYAN, 0x2104},
 };
 static constexpr int kThemeCount = 4;
-static int themeIndex = 0;
+static int themeIndex = 1;   // Neon Green, matches the target home screen
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate };
 static Screen screen = Screen::Home;
@@ -349,66 +349,88 @@ static void drawHome()
 {
     canvas.fillScreen(bgColor());
 
-    // Status bar
+    // Dark horizon band at the bottom, a rough stand-in for the wallpaper.
+    canvas.fillRect(0, 198, 320, 42, 0x0140);
+    canvas.drawFastHLine(0, 198, 320, theme().accent);
+
+    // Status bar: uptime on the left, link states on the right.
+    unsigned long mins = millis() / 60000;
+    char up[24];
+    snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
     canvas.setTextSize(2);
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(4, 2);
-    canvas.print("meshport");
-    char node[24];
-    snprintf(node, sizeof(node), "node %08lX", (unsigned long)myNode);
-    canvas.setTextSize(1);
     canvas.setTextColor(theme().fg, bgColor());
-    canvas.setCursor(200, 8);
-    canvas.print(node);
+    canvas.setCursor(6, 4);
+    canvas.print(up);
+    const char *links[3] = {"WiFi", "GPS", "BT"};
+    bool linkOn[3] = {wifiOn, gpsOn, btOn};
+    const int linkX[3] = {206, 248, 284};
+    for (int i = 0; i < 3; i++) {
+        canvas.setTextSize(1);
+        canvas.setTextColor(linkOn[i] ? theme().accent : 0x4208, bgColor());
+        canvas.setCursor(linkX[i], 8);
+        canvas.print(links[i]);
+    }
     canvas.drawFastHLine(0, 22, 320, theme().accent);
 
-    // Status card
-    drawPanel(4, 30, 150, 100);
+    // Notifications panel (left).
+    drawPanel(6, 32, 150, 98);
     canvas.setTextSize(2);
-    canvas.setTextColor(theme().fg, theme().panel);
-    canvas.setCursor(14, 42);
-    canvas.print("Mesh online");
-    char up[32];
-    snprintf(up, sizeof(up), "Up %lu min", (unsigned long)(millis() / 60000));
-    canvas.setTextSize(1);
     canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(14, 72);
-    canvas.print(up);
-    char heard[32];
+    canvas.setCursor(16, 40);
+    canvas.print("ALERTS");
+    String lastMsg = chatLines.empty() ? String("No public msgs yet") : chatLines.back();
+    if (lastMsg.length() > 20) lastMsg = lastMsg.substring(0, 20);
+    char heard[24];
     snprintf(heard, sizeof(heard), "Nodes heard: %u", (unsigned)nodes.size());
-    canvas.setCursor(14, 86);
-    canvas.print(heard);
-    canvas.setCursor(14, 100);
-    canvas.print("LongFast 906.9 MHz");
-
-    // Widget panel: WiFi, GPS, Bluetooth toggles
-    drawPanel(162, 30, 154, 100);
-    const char *names[3] = {"WiFi", "GPS", "BT"};
-    bool states[3] = {wifiOn, gpsOn, btOn};
+    String rows[3] = {String(heard), String("Msg: ") + lastMsg, String("LongFast 906.9 MHz")};
     for (int i = 0; i < 3; i++) {
-        int x = 170 + i * 50;
+        int y = 60 + i * 17;
+        canvas.fillRoundRect(12, y, 138, 15, 5, 0x2104);
         canvas.setTextSize(1);
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(x, 42);
-        canvas.print(names[i]);
-        bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) canvas.drawRoundRect(x - 4, 66, 44, 26, 8, TFT_WHITE);
-        drawToggle(x, 70, states[i]);
-        canvas.setTextColor(theme().accent, theme().panel);
-        canvas.setCursor(x, 96);
-        canvas.print(states[i] ? "ON" : "off");
+        canvas.setTextColor(theme().fg, 0x2104);
+        canvas.setCursor(18, y + 4);
+        canvas.print(rows[i]);
     }
 
-    // App row
+    // Widget panel (right): Wi-Fi, GPS, Bluetooth toggles.
+    drawPanel(164, 32, 150, 98);
+    const char *names[3] = {"WiFi", "GPS", "BT"};
+    for (int i = 0; i < 3; i++) {
+        int x = 176 + i * 46;
+        bool sel = (homeSel == kWidgetFirst + i);
+        if (sel) canvas.drawRoundRect(x - 6, 54, 48, 70, 8, TFT_WHITE);
+        canvas.setTextSize(1);
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(x + 6, 62);
+        canvas.print(names[i]);
+        drawToggle(x, 80, linkOn[i]);
+        canvas.setTextColor(theme().accent, theme().panel);
+        canvas.setCursor(x + 6, 106);
+        canvas.print(linkOn[i] ? "ON" : "off");
+    }
+    canvas.drawFastVLine(219, 56, 66, 0x2104);
+    canvas.drawFastVLine(265, 56, 66, 0x2104);
+
+    // Apps heading.
+    for (int r = 0; r < 2; r++)
+        for (int c = 0; c < 2; c++)
+            canvas.fillRoundRect(8 + c * 9, 140 + r * 9, 7, 7, 2, theme().accent);
+    canvas.setTextSize(2);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setCursor(30, 138);
+    canvas.print("Apps");
+
+    // App row: six tiles.
+    static const char *kGlyph[kTileCount] = {"P", "C", "N", "~", "=", "*"};
     for (int i = 0; i < kTileCount; i++) {
-        int cx = 26 + i * 53, cy = 165;
+        int cx = 28 + i * 50, cy = 170;
         bool sel = (homeSel == i);
-        canvas.fillCircle(cx, cy, 18, sel ? theme().accent : theme().panel);
-        canvas.drawCircle(cx, cy, 18, theme().accent);
+        canvas.fillCircle(cx, cy, 16, sel ? theme().accent : theme().panel);
+        canvas.drawCircle(cx, cy, 16, theme().accent);
         canvas.setTextSize(2);
         canvas.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
         canvas.setCursor(cx - 6, cy - 8);
-        canvas.print(kTiles[i][0]);
+        canvas.print(kGlyph[i]);
         canvas.setTextSize(1);
         canvas.setTextColor(theme().fg, bgColor());
         canvas.setCursor(cx - static_cast<int>(strlen(kTiles[i])) * 3, 190);
@@ -416,8 +438,8 @@ static void drawHome()
     }
 
     canvas.setTextSize(1);
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 226);
+    canvas.setTextColor(theme().accent, 0x0140);
+    canvas.setCursor(6, 226);
     canvas.print("w s a d move   Enter opens");
 }
 
