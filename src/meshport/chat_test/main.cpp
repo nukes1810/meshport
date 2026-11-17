@@ -169,6 +169,9 @@ static bool sendPublic(const String &text)
     return false;
 }
 
+#ifdef MESHPORT_TDECK_SCREEN
+static void setClock(int hh, int mm);
+#endif
 static void handleLine(String cmd)
 {
     cmd.trim();
@@ -387,6 +390,32 @@ static void glassCard(int x, int y, int w, int h, int r)
     canvas.fillRoundRect(x, y, w, h, r, glassBase());
     canvas.drawRoundRect(x, y, w, h, r, mix(theme().accent, bgColor(), 110));
     canvas.drawFastHLine(x + r, y + 1, w - 2 * r, mix(glassBase(), TFT_WHITE, 40));
+}
+
+static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    canvas.setTextColor(fg, bg);
+    canvas.setCursor(x, y);
+    canvas.print(s);
+}
+
+static void centerText(int cx, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    canvas.setTextColor(fg, bg);
+    canvas.setCursor(cx - static_cast<int>(canvas.textWidth(s)) / 2, y);
+    canvas.print(s);
+}
+
+static void drawHeader(const String &title)
+{
+    useFont();
+    canvas.fillRect(0, 0, 320, 22, theme().panel);
+    canvas.drawFastHLine(0, 22, 320, theme().accent);
+    // Back chevron and label. Touch zone: x < 66, y < 22.
+    canvas.drawLine(9, 11, 14, 6, theme().accent);
+    canvas.drawLine(9, 11, 14, 16, theme().accent);
+    putText(20, 3, "Home", theme().accent, theme().panel);
+    centerText(160, 3, title.c_str(), theme().fg, theme().panel);
 }
 
 static void drawPanel(int x, int y, int w, int h)
