@@ -606,19 +606,40 @@ static void parseNmea(char *s)
     }
 }
 
+// Baud rates to try, in order, until bytes arrive. Most GNSS modules are 9600 or 38400.
+static const uint32_t kGpsBauds[] = {38400, 9600, 115200};
+static int gpsBaudIdx = 0;
+static uint32_t gpsBytes = 0;          // raw bytes received on the GPS UART
+static uint32_t gpsSentences = 0;      // NMEA sentences parsed
+static uint32_t gpsOpenedMs = 0;
+static uint32_t gpsReportMs = 0;
+
+static void openGps(int idx)
+{
+    gpsBaudIdx = idx;
+    gpsSerial.end();
+    gpsSerial.begin(kGpsBauds[gpsBaudIdx], SERIAL_8N1, kGpsRxPin, kGpsTxPin);
+    gpsOpenedMs = millis();
+    gpsLen = 0;
+    Serial.printf("gps uart at %lu baud\n", (unsigned long)kGpsBauds[gpsBaudIdx]);
+}
+
 static void pollGps()
 {
     if (!gpsOn) return;
     if (!gpsStarted) {
-        gpsSerial.begin(38400, SERIAL_8N1, kGpsRxPin, kGpsTxPin);
+        openGps(0);
         gpsStarted = true;
     }
     while (gpsSerial.available()) {
         char c = static_cast<char>(gpsSerial.read());
+        gpsBytes++;
         if (c == '\n' || c == '\r') {
             if (gpsLen > 0) {
                 gpsLine[gpsLen] = '\0';
+                if (gpsLine[0] == '$' && gpsSentences < 3) Serial.printf("gps: %s\n", gpsLine);
                 parseNmea(gpsLine);
+                gpsSentences++;
                 gpsLen = 0;
             }
         } else if (gpsLen < sizeof(gpsLine) - 1) {
@@ -626,6 +647,15 @@ static void pollGps()
         } else {
             gpsLen = 0;
         }
+    }
+    // No bytes yet: try the next baud rate every 3 seconds.
+    if (gpsBytes == 0 && millis() - gpsOpenedMs > 3000) {
+        openGps((gpsBaudIdx + 1) % 3);
+    }
+    if (millis() - gpsReportMs > 10000) {
+        gpsReportMs = millis();
+        Serial.printf("gps: %lu bytes, %lu sentences, %d sats\n", (unsigned long)gpsBytes,
+                      (unsigned long)gpsSentences, gpsSats);
     }
 }
 
@@ -1053,7 +1083,8 @@ static int buildSettingItems(Screen s, char items[][40])
         snprintf(items[0], 40, "GPS Power: %s", gpsOn ? "ON" : "OFF");
         snprintf(items[1], 40, "Update Interval: %s", kGpsIntervals[gpsIntervalIdx]);
         if (gpsSats > 0) snprintf(items[2], 40, "Fix: %d sats, %.0f m", gpsSats, gpsAltM);
-        else snprintf(items[2], 40, "Fix: no fix");
+        else if (gpsBytes == 0) snprintf(items[2], 40, "Fix: no data, check wiring");
+        else snprintf(items[2], 40, "Fix: searching");
         snprintf(items[3], 40, "Back");
         return 4;
     case Screen::SettingsDisplay:
