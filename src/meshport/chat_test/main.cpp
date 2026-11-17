@@ -734,7 +734,7 @@ static void pollTrackball()
     uint32_t now = millis();
     for (TrackPin &t : trackPins) {
         bool high = digitalRead(t.pin) != 0;
-        if (!high && t.lastHigh && now - t.lastMs > 150) {
+        if (!high && t.lastHigh && now - t.lastMs > 40) {
             t.lastMs = now;
             Serial.printf("trackball pin %d -> key 0x%02X\n", t.pin, t.key);
             handleKey(t.key);
