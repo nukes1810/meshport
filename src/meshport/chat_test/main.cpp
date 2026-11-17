@@ -322,209 +322,202 @@ static void addLine(const String &s)
     while (chatLines.size() > kMaxLines) chatLines.erase(chatLines.begin());
 }
 
+// --- Drawing system -------------------------------------------------------
+// One font, one card style, one toggle style. Touch zones depend on the
+// positions used below, so change geometry only together with handleTouchTap.
+static constexpr uint16_t kMuted = 0x8C71;
+static constexpr uint16_t kBorder = 0x2965;
+static constexpr uint16_t kTrackOff = 0x4208;
+
+static void useFont() { canvas.setFont(&fonts::Font2); }
+
+static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    canvas.setTextColor(fg, bg);
+    canvas.setCursor(x, y);
+    canvas.print(s);
+}
+
+static void centerText(int cx, int y, const char *s, uint16_t fg, uint16_t bg)
+{
+    canvas.setTextColor(fg, bg);
+    canvas.setCursor(cx - static_cast<int>(canvas.textWidth(s)) / 2, y);
+    canvas.print(s);
+}
+
 static void drawHeader(const String &title)
 {
+    useFont();
     canvas.fillRect(0, 0, 320, 22, theme().panel);
-    canvas.fillRect(0, 21, 320, 2, theme().accent);
-    canvas.fillRoundRect(4, 2, 58, 18, 6, theme().accent);
-    canvas.setTextSize(1);
-    canvas.setTextColor(bgColor(), theme().accent);
-    canvas.setCursor(12, 7);
-    canvas.print("< HOME");
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(70, 3);
-    canvas.print(title);
+    canvas.drawFastHLine(0, 22, 320, theme().accent);
+    // Back chevron and label. Touch zone: x < 66, y < 22.
+    canvas.drawLine(9, 11, 14, 6, theme().accent);
+    canvas.drawLine(9, 11, 14, 16, theme().accent);
+    putText(20, 3, "Home", theme().accent, theme().panel);
+    centerText(160, 3, title.c_str(), theme().fg, theme().panel);
 }
 
 static void drawPanel(int x, int y, int w, int h)
 {
-    canvas.fillRoundRect(x, y, w, h, 10, theme().panel);
-    canvas.drawRoundRect(x, y, w, h, 10, theme().accent);
-    canvas.drawRoundRect(x + 1, y + 1, w - 2, h - 2, 9, theme().accent);
+    canvas.fillRoundRect(x, y, w, h, 8, theme().panel);
+    canvas.drawRoundRect(x, y, w, h, 8, kBorder);
 }
 
 static void drawToggle(int x, int y, bool on)
 {
-    canvas.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : 0x2104);
+    canvas.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : kTrackOff);
     canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
 }
 
 static void drawHome()
 {
+    useFont();
     canvas.fillScreen(bgColor());
 
-    // Dark horizon band at the bottom, a rough stand-in for the wallpaper.
-    canvas.fillRect(0, 198, 320, 42, 0x0140);
-    canvas.drawFastHLine(0, 198, 320, theme().accent);
-
-    // Status bar: uptime on the left, link states on the right.
+    // Status bar: uptime on the left, link pills on the right.
     unsigned long mins = millis() / 60000;
     char up[24];
     snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setCursor(6, 4);
-    canvas.print(up);
+    putText(8, 3, up, theme().fg, bgColor());
     const char *links[3] = {"WiFi", "GPS", "BT"};
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
-    const int linkX[3] = {206, 248, 284};
+    const int linkX[3] = {194, 240, 282};
+    const int linkW[3] = {42, 36, 30};
     for (int i = 0; i < 3; i++) {
-        canvas.setTextSize(1);
-        canvas.setTextColor(linkOn[i] ? theme().accent : 0x4208, bgColor());
-        canvas.setCursor(linkX[i], 8);
-        canvas.print(links[i]);
+        uint16_t fill = linkOn[i] ? theme().accent : bgColor();
+        uint16_t txt = linkOn[i] ? bgColor() : kMuted;
+        canvas.fillRoundRect(linkX[i], 3, linkW[i], 16, 8, fill);
+        if (!linkOn[i]) canvas.drawRoundRect(linkX[i], 3, linkW[i], 16, 8, kBorder);
+        centerText(linkX[i] + linkW[i] / 2, 3, links[i], txt, fill);
     }
     canvas.drawFastHLine(0, 22, 320, theme().accent);
 
-    // Notifications panel (left).
+    // Alerts card (left).
     drawPanel(6, 32, 150, 98);
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(16, 40);
-    canvas.print("ALERTS");
-    String lastMsg = chatLines.empty() ? String("No public msgs yet") : chatLines.back();
-    if (lastMsg.length() > 20) lastMsg = lastMsg.substring(0, 20);
+    putText(16, 39, "Alerts", theme().accent, theme().panel);
+    String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
+    if (lastMsg.length() > 19) lastMsg = lastMsg.substring(0, 19);
     char heard[24];
-    snprintf(heard, sizeof(heard), "Nodes heard: %u", (unsigned)nodes.size());
-    String rows[3] = {String(heard), String("Msg: ") + lastMsg, String("LongFast 906.9 MHz")};
+    snprintf(heard, sizeof(heard), "Nodes heard  %u", (unsigned)nodes.size());
+    String rows[3] = {String(heard), String("Last: ") + lastMsg, String("LongFast 906.9")};
     for (int i = 0; i < 3; i++) {
-        int y = 60 + i * 17;
-        canvas.fillRoundRect(12, y, 138, 15, 5, 0x2104);
-        canvas.setTextSize(1);
-        canvas.setTextColor(theme().fg, 0x2104);
-        canvas.setCursor(18, y + 4);
-        canvas.print(rows[i]);
+        int y = 58 + i * 20;
+        canvas.fillRoundRect(12, y, 138, 16, 5, bgColor());
+        putText(18, y, rows[i].c_str(), theme().fg, bgColor());
     }
 
-    // Widget panel (right): Wi-Fi, GPS, Bluetooth toggles.
+    // Widget card (right): WiFi, GPS, BT toggles.
     drawPanel(164, 32, 150, 98);
+    putText(174, 39, "Widgets", theme().accent, theme().panel);
     const char *names[3] = {"WiFi", "GPS", "BT"};
     for (int i = 0; i < 3; i++) {
         int x = 176 + i * 46;
         bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) canvas.drawRoundRect(x - 6, 54, 48, 70, 8, TFT_WHITE);
-        canvas.setTextSize(1);
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(x + 6, 62);
-        canvas.print(names[i]);
-        drawToggle(x, 80, linkOn[i]);
-        canvas.setTextColor(theme().accent, theme().panel);
-        canvas.setCursor(x + 6, 106);
-        canvas.print(linkOn[i] ? "ON" : "off");
+        if (sel) canvas.drawRoundRect(x - 6, 58, 46, 66, 8, theme().accent);
+        centerText(x + 18, 62, names[i], theme().fg, theme().panel);
+        drawToggle(x, 82, linkOn[i]);
+        centerText(x + 18, 106, linkOn[i] ? "ON" : "OFF", linkOn[i] ? theme().accent : kMuted, theme().panel);
     }
-    canvas.drawFastVLine(219, 56, 66, 0x2104);
-    canvas.drawFastVLine(265, 56, 66, 0x2104);
+    canvas.drawFastVLine(219, 58, 66, kBorder);
+    canvas.drawFastVLine(265, 58, 66, kBorder);
 
-    // Apps heading.
-    for (int r = 0; r < 2; r++)
-        for (int c = 0; c < 2; c++)
-            canvas.fillRoundRect(8 + c * 9, 140 + r * 9, 7, 7, 2, theme().accent);
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setCursor(30, 138);
-    canvas.print("Apps");
-
-    // App row: six tiles.
+    // App row.
+    putText(10, 134, "Apps", theme().fg, bgColor());
     static const char *kGlyph[kTileCount] = {"P", "C", "N", "~", "=", "*"};
     for (int i = 0; i < kTileCount; i++) {
-        int cx = 28 + i * 50, cy = 170;
+        int cx = 26 + i * 53, cy = 170;
         bool sel = (homeSel == i);
-        canvas.fillCircle(cx, cy, 16, sel ? theme().accent : theme().panel);
-        canvas.drawCircle(cx, cy, 16, theme().accent);
-        canvas.setTextSize(2);
-        canvas.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
-        canvas.setCursor(cx - 6, cy - 8);
-        canvas.print(kGlyph[i]);
-        canvas.setTextSize(1);
-        canvas.setTextColor(theme().fg, bgColor());
-        canvas.setCursor(cx - static_cast<int>(strlen(kTiles[i])) * 3, 190);
-        canvas.print(kTiles[i]);
+        if (sel) {
+            canvas.fillCircle(cx, cy, 18, theme().accent);
+            centerText(cx, cy - 8, kGlyph[i], bgColor(), theme().accent);
+        } else {
+            canvas.fillCircle(cx, cy, 18, theme().panel);
+            canvas.drawCircle(cx, cy, 18, kBorder);
+            centerText(cx, cy - 8, kGlyph[i], theme().accent, theme().panel);
+        }
+        centerText(cx, 191, kTiles[i], sel ? theme().accent : theme().fg, bgColor());
     }
 
-    canvas.setTextSize(1);
-    canvas.setTextColor(theme().accent, 0x0140);
-    canvas.setCursor(6, 226);
-    canvas.print("w s a d move   Enter opens");
+    centerText(160, 220, "w s a d move   Enter opens", kMuted, bgColor());
 }
 
 static void drawPublic()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     drawHeader("Public chat");
-    canvas.fillRoundRect(256, 2, 60, 18, 6, theme().panel);
-    canvas.drawRoundRect(256, 2, 60, 18, 6, theme().accent);
-    canvas.setTextSize(1);
-    canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(270, 7);
-    canvas.print("SET");
-    // Newest messages in rounded rows, input in its own panel at the bottom.
+    // Settings shortcut, top right.
+    canvas.fillRoundRect(256, 2, 60, 18, 8, theme().accent);
+    centerText(286, 3, "SET", bgColor(), theme().accent);
+
+    // Newest messages as rounded rows.
     size_t first = chatLines.size() > 9 ? chatLines.size() - 9 : 0;
     int row = 0;
     for (size_t i = first; i < chatLines.size(); i++, row++) {
         int y = 28 + row * 19;
         canvas.fillRoundRect(4, y, 312, 17, 6, theme().panel);
-        canvas.setTextSize(1);
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(10, y + 5);
-        canvas.print(chatLines[i]);
+        putText(12, y + 1, chatLines[i].c_str(), theme().fg, theme().panel);
     }
+
+    // Composer.
     drawPanel(4, 200, 312, 34);
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().accent, theme().panel);
-    canvas.setCursor(12, 210);
-    canvas.print("> ");
-    canvas.setTextColor(theme().fg, theme().panel);
-    canvas.print(inputBuf.substring(0, kLineChars - 2));
+    putText(12, 209, ">", theme().accent, theme().panel);
+    if (inputBuf.length() == 0) {
+        putText(26, 209, "Message the mesh", kMuted, theme().panel);
+    } else {
+        int start = inputBuf.length() > 34 ? static_cast<int>(inputBuf.length()) - 34 : 0;
+        String shown = inputBuf.substring(start);
+        if ((millis() / 500) % 2 == 0) shown += "_";
+        putText(26, 209, shown.c_str(), theme().fg, theme().panel);
+    }
 }
 
 static void drawNodes()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     char title[24];
     snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
-    uint32_t now = millis();
+
     if (nodes.empty()) {
-        drawPanel(4, 40, 312, 60);
-        canvas.setTextSize(2);
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(16, 60);
-        canvas.print("No nodes heard yet");
+        drawPanel(16, 70, 288, 72);
+        centerText(160, 86, "No nodes heard yet", theme().fg, theme().panel);
+        centerText(160, 108, "Nearby Meshtastic nodes show here", kMuted, theme().panel);
+        return;
     }
-    for (size_t i = 0; i < nodes.size() && i < 9; i++) {
-        int y = 28 + static_cast<int>(i) * 21;
-        canvas.fillRoundRect(4, y, 312, 18, 6, theme().panel);
-        canvas.setTextSize(1);
-        canvas.setTextColor(theme().accent, theme().panel);
+
+    uint32_t now = millis();
+    for (size_t i = 0; i < nodes.size() && i < 6; i++) {
+        int y = 30 + static_cast<int>(i) * 32;
+        canvas.fillRoundRect(6, y, 308, 27, 7, theme().panel);
+
         char id[12];
         snprintf(id, sizeof(id), "%08lX", (unsigned long)nodes[i].id);
-        canvas.setCursor(10, y + 5);
-        canvas.print(id);
+        putText(14, y + 5, id, theme().accent, theme().panel);
+
         // Signal bar: -120 dBm (empty) to -50 dBm (full).
         int r = static_cast<int>(nodes[i].rssi);
         if (r < -120) r = -120;
         if (r > -50) r = -50;
-        int bar = (r + 120) * 80 / 70;
-        canvas.fillRect(100, y + 6, 80, 6, 0x2104);
-        canvas.fillRect(100, y + 6, bar, 6, theme().accent);
+        int bar = (r + 120) * 70 / 70;
+        uint16_t col = r > -90 ? 0x07E0 : (r > -105 ? theme().accent : 0xFD20);
+        canvas.fillRoundRect(104, y + 10, 70, 6, 3, kTrackOff);
+        canvas.fillRoundRect(104, y + 10, bar, 6, 3, col);
+
         char info[24];
         snprintf(info, sizeof(info), "%ddBm %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(190, y + 5);
-        canvas.print(info);
+        putText(184, y + 5, info, theme().fg, theme().panel);
     }
-    canvas.setTextSize(1);
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(4, 224);
-    canvas.print("q: back");
+    centerText(160, 224, "q or Home to go back", kMuted, bgColor());
 }
 
 static void drawSettings()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     drawHeader("Settings");
-    canvas.setTextSize(2);
+
     char items[kSettingsCount][32];
     snprintf(items[0], sizeof(items[0]), "Theme: %s", kThemes[themeIndex].name);
     snprintf(items[1], sizeof(items[1]), "Background: %s", kBackgroundNames[bgIndex]);
@@ -533,30 +526,23 @@ static void drawSettings()
     snprintf(items[4], sizeof(items[4]), "GPS: %s", gpsOn ? "on" : "off");
     snprintf(items[5], sizeof(items[5]), "Calibrate touch");
     snprintf(items[6], sizeof(items[6]), "Back");
+
     for (int i = 0; i < kSettingsCount; i++) {
         bool sel = (i == settingsSel);
         int y = 36 + i * 26;
-        canvas.fillRoundRect(4, y, 312, 22, 6, sel ? theme().accent : bgColor());
-        canvas.setTextColor(sel ? bgColor() : theme().fg, sel ? theme().accent : bgColor());
-        canvas.setCursor(12, y + 3);
-        canvas.print(items[i]);
+        canvas.fillRoundRect(6, y, 308, 22, 6, sel ? theme().accent : theme().panel);
+        putText(14, y + 3, items[i], sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
     }
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 222);
-    canvas.print("Enter: change  q: back");
+    centerText(160, 224, "Enter change   q back", kMuted, bgColor());
 }
 
 static void drawSoon()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     drawHeader(soonName);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setTextSize(2);
-    canvas.setCursor(0, 60);
-    canvas.print("Coming in a later build");
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 220);
-    canvas.print("q: back");
+    centerText(160, 100, "Coming in a later build", theme().fg, bgColor());
+    centerText(160, 220, "q or Home to go back", kMuted, bgColor());
 }
 
 static int signalY(float rssi)
@@ -569,93 +555,86 @@ static int signalY(float rssi)
 
 static void drawSpectrum()
 {
+    useFont();
     canvas.fillScreen(bgColor());
-    drawHeader("Spectrum 902-928 MHz");
+    drawHeader("Spectrum");
     drawPanel(4, 28, 312, 168);
     if (!specScanned) {
-        canvas.setTextSize(2);
-        canvas.setTextColor(theme().fg, theme().panel);
-        canvas.setCursor(40, 100);
-        canvas.print("Press Enter to scan");
+        centerText(160, 100, "Press Enter to scan", theme().fg, theme().panel);
+        centerText(160, 122, "Sweeps 902 to 928 MHz", kMuted, theme().panel);
     } else {
+        int peak = 0;
+        for (int i = 1; i < kSpecPoints; i++) {
+            if (specDb[i] > specDb[peak]) peak = i;
+        }
+        char pk[40];
+        snprintf(pk, sizeof(pk), "Peak %.1f MHz  %d dBm", 902.0f + 0.5f * peak, specDb[peak]);
+        putText(12, 34, pk, theme().accent, theme().panel);
         for (int i = 0; i < kSpecPoints; i++) {
             int level = specDb[i];
             if (level < -120) level = -120;
             if (level > -50) level = -50;
-            int h = (level + 120) * 150 / 70;
-            canvas.fillRect(12 + i * 5, 186 - h, 4, h, theme().accent);
+            int h = (level + 120) * 130 / 70;
+            canvas.fillRect(12 + i * 5, 186 - h, 4, h, i == peak ? 0xFD20 : theme().accent);
         }
     }
-    canvas.setTextSize(1);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setCursor(4, 204);
-    canvas.print("902 MHz");
-    canvas.setCursor(260, 204);
-    canvas.print("927 MHz");
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(4, 224);
-    canvas.print("Enter: scan   q: back");
+    putText(4, 202, "902 MHz", kMuted, bgColor());
+    putText(256, 202, "927 MHz", kMuted, bgColor());
+    centerText(160, 224, "Enter scan   q back", kMuted, bgColor());
 }
 
 static void drawSignal()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     drawHeader("Signal");
     drawPanel(4, 28, 312, 168);
-    canvas.drawFastHLine(10, signalY(-60), 300, 0x2104);
-    canvas.drawFastHLine(10, signalY(-100), 300, 0x2104);
+    canvas.drawFastHLine(10, signalY(-60), 300, kBorder);
+    canvas.drawFastHLine(10, signalY(-100), 300, kBorder);
+    if (rssiHist.size() < 2) {
+        centerText(160, 110, "Waiting for packets", kMuted, theme().panel);
+    }
     for (size_t i = 1; i < rssiHist.size(); i++) {
         int x0 = 10 + static_cast<int>((i - 1) * 5), x1 = 10 + static_cast<int>(i * 5);
-        canvas.drawLine(x0, signalY(rssiHist[i - 1]), x1, signalY(rssiHist[i]), theme().accent);
+        int y0 = signalY(rssiHist[i - 1]), y1 = signalY(rssiHist[i]);
+        canvas.drawLine(x0, y0, x1, y1, theme().accent);
+        canvas.drawLine(x0, y0 + 1, x1, y1 + 1, theme().accent);
     }
-    canvas.setTextSize(1);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setCursor(4, 204);
     char line[48];
     float last = rssiHist.empty() ? 0 : rssiHist.back();
     snprintf(line, sizeof(line), "RSSI %.0f dBm   SNR %.1f dB", last, lastSnr);
-    canvas.print(line);
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(4, 224);
-    canvas.print("q: back");
+    putText(10, 202, line, theme().fg, bgColor());
+    centerText(160, 224, "q back", kMuted, bgColor());
 }
 
 static void drawContacts()
 {
+    useFont();
     canvas.fillScreen(bgColor());
     drawHeader("Contacts");
     drawPanel(4, 34, 312, 120);
-    canvas.setTextSize(2);
-    canvas.setTextColor(theme().fg, theme().panel);
-    canvas.setCursor(16, 52);
-    canvas.print("Encrypted contacts");
-    canvas.setTextSize(1);
-    canvas.setCursor(16, 84);
-    canvas.print("Coming after the two-device test.");
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(4, 224);
-    canvas.print("q: back");
+    centerText(160, 64, "Encrypted contacts", theme().fg, theme().panel);
+    centerText(160, 92, "Coming after the two-device test", kMuted, theme().panel);
+    centerText(160, 224, "q or Home to go back", kMuted, bgColor());
 }
 
 static void drawCalibrate()
 {
+    useFont();
     canvas.fillScreen(bgColor());
-    drawHeader("Touch calibration");
     static const int kTargetX[4] = {12, 307, 12, 307};
-    static const int kTargetY[4] = {12, 12, 227, 227};
+    static const int kTargetY[4] = {34, 34, 227, 227};
     for (int i = 0; i < 4; i++) {
-        uint16_t col = (i == calStep) ? theme().accent : theme().fg;
-        canvas.drawLine(kTargetX[i] - 8, kTargetY[i], kTargetX[i] + 8, kTargetY[i], col);
-        canvas.drawLine(kTargetX[i], kTargetY[i] - 8, kTargetX[i], kTargetY[i] + 8, col);
+        uint16_t col = (i == calStep) ? theme().accent : kMuted;
+        canvas.drawCircle(kTargetX[i], kTargetY[i], 8, col);
+        canvas.drawFastHLine(kTargetX[i] - 10, kTargetY[i], 21, col);
+        canvas.drawFastVLine(kTargetX[i], kTargetY[i] - 10, 21, col);
     }
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setTextSize(2);
-    canvas.setCursor(40, 100);
-    canvas.print("Tap the + marks");
-    canvas.setCursor(40, 124);
+    drawPanel(48, 92, 224, 62);
+    centerText(160, 104, "Tap the glowing crosshair", theme().fg, theme().panel);
     char step[24];
-    snprintf(step, sizeof(step), "point %d of 4", calStep + 1);
-    canvas.print(step);
+    snprintf(step, sizeof(step), "Corner %d of 4", calStep + 1);
+    centerText(160, 126, step, theme().accent, theme().panel);
 }
 
 static void drawScreen()
