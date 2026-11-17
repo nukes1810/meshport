@@ -261,8 +261,9 @@ struct NodeEntry {
     uint32_t firstMs;
     uint32_t lastMs;
     uint32_t count;     // packets heard from this node
-    double lat = 0, lon = 0;
-    bool hasPos = false;   // set from the node's POSITION_APP packets
+    double lat;
+    double lon;
+    bool hasPos;           // set from the node's POSITION_APP packets
 };
 static std::vector<NodeEntry> nodes;
 static int nodeSel = 0;   // selected row on the Nodes screen, and the node shown in Node Info
@@ -279,7 +280,7 @@ static void noteNode(uint32_t id, float rssi, float snr)
             return;
         }
     }
-    if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, snr, millis(), millis(), 1});
+    if (nodes.size() < kMaxNodes) nodes.push_back({id, rssi, snr, millis(), millis(), 1, 0.0, 0.0, false});
 }
 
 // Meshtastic POSITION_APP payload (protobuf Position): latitude_i is field 1 and
