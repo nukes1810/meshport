@@ -225,7 +225,7 @@ static LGFX_Sprite canvas(&lcd);
 static std::vector<String> chatLines;
 static String inputBuf;
 static constexpr int kMaxLines = 12;
-static constexpr int kLineChars = 24;
+static constexpr int kLineChars = 36;
 static constexpr uint8_t kKeyboardAddr = 0x55;
 
 struct Theme {
@@ -233,13 +233,13 @@ struct Theme {
     uint16_t bg, fg, accent, panel;
 };
 static const Theme kThemes[] = {
-    {"Neon Blue", 0x0021, TFT_WHITE, 0x06FF, 0x08A5},
-    {"Neon Green", 0x0021, TFT_WHITE, 0x07E0, 0x0320},
-    {"Light", TFT_WHITE, TFT_BLACK, TFT_BLUE, 0xDEFB},
-    {"Dark", TFT_BLACK, TFT_WHITE, TFT_CYAN, 0x2104},
+    {"Cobalt Ice",   0x0842, 0xF7BE, 0x3DDF, 0x10A4}, // Deep midnight blue + electric cyan
+    {"Emerald Dark", 0x0841, 0xF7BE, 0x07EC, 0x10C3}, // Obsidian slate + crisp mint green
+    {"Amber Night",  0x0820, 0xFFDF, 0xFD20, 0x18A1}, // Warm carbon + tactical amber
+    {"Daylight",     0xEF7D, 0x10A2, 0x039B, 0xFFFF}, // Soft cool gray + crisp white cards
 };
 static constexpr int kThemeCount = 4;
-static int themeIndex = 1;   // Neon Green, matches the target home screen
+static int themeIndex = 1;   // Emerald Dark default
 
 enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon, Calibrate,
                     SettingsDevice, SettingsLora, SettingsGps, SettingsDisplay };
@@ -271,6 +271,7 @@ static void noteNode(uint32_t id, float rssi)
 }
 
 static const Theme &theme() { return kThemes[themeIndex]; }
+static bool isLightTheme() { return themeIndex == 3; }
 
 // Spectrum analyzer and signal analyzer.
 static float loraFreqMHz = 906.875f;
@@ -314,13 +315,11 @@ static void buildSpecPalette()
     specPaletteReady = true;
 }
 
-// Palette index for a dBm reading, clamped to the plot range.
 static int specLevelIndex(int db)
 {
     return constrain((constrain(db, kSpecDbMin, kSpecDbMax) - kSpecDbMin) * 255 / (kSpecDbMax - kSpecDbMin), 0, 255);
 }
 
-// One sweep across the band: tune, read RSSI, retune to LoRa, and push a waterfall row.
 static void sweepSpectrum()
 {
     for (int i = 0; i < kSpecPoints; i++) {
@@ -337,8 +336,8 @@ static void sweepSpectrum()
     specSweepMs = millis();
 }
 
-static const uint16_t kBackgrounds[] = {0, TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
-static const char *kBackgroundNames[] = {"Theme", "Black", "Navy", "Charcoal", "Forest"};
+static const uint16_t kBackgrounds[] = {0, 0x0000, 0x0843, 0x10A2, 0x08C1};
+static const char *kBackgroundNames[] = {"Theme", "Pure Black", "Midnight", "Graphite", "Deep Pine"};
 static constexpr int kBackgroundCount = 5;
 static int bgIndex = 0;
 static uint16_t bgColor() { return bgIndex == 0 ? theme().bg : kBackgrounds[bgIndex]; }
@@ -376,15 +375,14 @@ static void addLine(const String &s)
 }
 
 // --- Drawing system -------------------------------------------------------
-// One font, one card style, one toggle style. Touch zones depend on the
-// positions used below, so change geometry only together with handleTouchTap.
 static constexpr uint16_t kMuted = 0x8C71;
 static constexpr uint16_t kBorder = 0x2965;
-static constexpr uint16_t kTrackOff = 0x4208;
+static constexpr uint16_t kTrackOff = 0x3186;
 
-static void useFont() { canvas.setFont(&fonts::Font2); }
+static void useFontSmall() { canvas.setFont(&fonts::Font0); }
+static void useFont()      { canvas.setFont(&fonts::Font2); }
+static void useFontLarge() { canvas.setFont(&fonts::Font4); }
 
-// Blend two RGB565 colors. t = 0 gives a, t = 255 gives b.
 static uint16_t mix(uint16_t a, uint16_t b, int t)
 {
     int ar = (a >> 11) & 31, ag = (a >> 5) & 63, ab = a & 31;
@@ -395,36 +393,46 @@ static uint16_t mix(uint16_t a, uint16_t b, int t)
     return static_cast<uint16_t>((r << 11) | (g << 5) | bl);
 }
 
-// Backdrop color at row y (the same gradient drawBackdrop paints).
 static uint16_t backdropAt(int y)
 {
-    return mix(mix(bgColor(), theme().accent, 14), bgColor(), y * 255 / 239);
+    uint16_t top = mix(bgColor(), theme().accent, isLightTheme() ? 18 : 22);
+    return mix(top, bgColor(), constrain(y, 0, 239) * 255 / 239);
 }
 
-// Fill color of every glass card. Text drawn on a card must use this as its background.
 static uint16_t glassBase()
 {
-    return mix(theme().panel, bgColor(), 110);
+    return isLightTheme() ? theme().panel : mix(theme().panel, bgColor(), 55);
 }
 
-// Background: a soft vertical gradient, lit from the top.
+static uint16_t subCardBase()
+{
+    return isLightTheme() ? mix(theme().panel, bgColor(), 90) : mix(glassBase(), bgColor(), 95);
+}
+
+static uint16_t mutedText()
+{
+    return isLightTheme() ? 0x5AEB : 0x94B2;
+}
+
 static void drawBackdrop()
 {
-    uint16_t top = mix(bgColor(), theme().accent, 14);
+    uint16_t top = mix(bgColor(), theme().accent, isLightTheme() ? 18 : 22);
     uint16_t bottom = bgColor();
     for (int y = 0; y < 240; y++) {
         canvas.drawFastHLine(0, y, 320, mix(top, bottom, y * 255 / 239));
     }
 }
 
-// Glass card: a dark translucent-looking panel with an accent rim and a thin highlight.
-// LovyanGFX has no alpha blending, so the glass is faked with layered colors. No sheen
-// overlay: text on a card must match the card fill exactly, or a box shows behind it.
-static void glassCard(int x, int y, int w, int h, int r)
+// Elevated card with subtle border and top specular edge
+static void glassCard(int x, int y, int w, int h, int r, bool active = false)
 {
-    canvas.fillRoundRect(x, y, w, h, r, glassBase());
-    canvas.drawRoundRect(x, y, w, h, r, mix(theme().accent, bgColor(), 110));
-    canvas.drawFastHLine(x + r, y + 1, w - 2 * r, mix(glassBase(), TFT_WHITE, 40));
+    uint16_t fill = glassBase();
+    uint16_t rim = active ? theme().accent : mix(theme().accent, bgColor(), isLightTheme() ? 170 : 185);
+    canvas.fillRoundRect(x, y, w, h, r, fill);
+    canvas.drawRoundRect(x, y, w, h, r, rim);
+    if (!isLightTheme() && w > 2 * r + 4) {
+        canvas.drawFastHLine(x + r, y + 1, w - 2 * r, mix(fill, TFT_WHITE, active ? 65 : 28));
+    }
 }
 
 static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
@@ -444,24 +452,36 @@ static void centerText(int cx, int y, const char *s, uint16_t fg, uint16_t bg)
 static void drawHeader(const String &title)
 {
     useFont();
-    canvas.fillRect(0, 0, 320, 22, theme().panel);
-    canvas.drawFastHLine(0, 22, 320, theme().accent);
-    // Back chevron and label. Touch zone: x < 66, y < 22.
-    canvas.drawLine(9, 11, 14, 6, theme().accent);
-    canvas.drawLine(9, 11, 14, 16, theme().accent);
-    putText(20, 3, "Home", theme().accent, theme().panel);
-    centerText(160, 3, title.c_str(), theme().fg, theme().panel);
+    uint16_t hdrBg = isLightTheme() ? theme().panel : mix(theme().panel, bgColor(), 40);
+    canvas.fillRect(0, 0, 320, 23, hdrBg);
+    canvas.drawFastHLine(0, 23, 320, mix(theme().accent, hdrBg, 100));
+
+    // Back pill button (touch zone: x < 66, y < 22)
+    uint16_t backBg = mix(theme().accent, hdrBg, 200);
+    canvas.fillRoundRect(4, 3, 56, 17, 6, backBg);
+    canvas.drawLine(11, 11, 15, 7, theme().accent);
+    canvas.drawLine(11, 11, 15, 15, theme().accent);
+    canvas.drawLine(12, 11, 16, 7, theme().accent);
+    canvas.drawLine(12, 11, 16, 15, theme().accent);
+    putText(21, 4, "Home", theme().accent, backBg);
+
+    centerText(160, 4, title.c_str(), theme().fg, hdrBg);
 }
 
 static void drawPanel(int x, int y, int w, int h)
 {
-    glassCard(x, y, w, h, 10);
+    glassCard(x, y, w, h, 10, false);
 }
 
 static void drawToggle(int x, int y, bool on)
 {
-    canvas.fillRoundRect(x, y, 36, 18, 9, on ? theme().accent : kTrackOff);
-    canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 7, TFT_WHITE);
+    uint16_t track = on ? theme().accent : (isLightTheme() ? 0xC618 : kTrackOff);
+    canvas.fillRoundRect(x, y, 36, 18, 9, track);
+    if (!on) {
+        canvas.drawRoundRect(x, y, 36, 18, 9, mix(theme().fg, track, 190));
+    }
+    uint16_t knob = (on && !isLightTheme()) ? bgColor() : TFT_WHITE;
+    canvas.fillCircle(on ? x + 27 : x + 9, y + 9, 6, knob);
 }
 
 // --- Clock, GPS interval, and saved settings --------------------------------
@@ -478,7 +498,6 @@ static void setClock(int hh, int mm)
     clockSet = true;
 }
 
-// HH:MM from the last 'time HHMM' command, or --:-- until it is set.
 static const char *clockText()
 {
     static char buf[8];
@@ -517,22 +536,18 @@ static void saveSettings()
     p.end();
 }
 
-// Line icons for the app row. Drawn with primitives so they stay sharp at 320x240.
-// Status and widget icons. Blue when on, grey when off. Integer math only.
-static constexpr uint16_t kOnBlue = 0x03FF;
-static constexpr uint16_t kOffGrey = 0x5AEB;
+// --- Crisp Vector Primitives ------------------------------------------------
+static constexpr uint16_t kOnBlue = 0x25DF;
+static constexpr uint16_t kOffGrey = 0x6B4D;
 
-// Points every 15 degrees along the top arc, from 45 to 135 degrees, scaled by 1000.
 static const int kArcCos[7] = {707, 500, 259, 0, -259, -500, -707};
 static const int kArcSin[7] = {707, 866, 966, 1000, 966, 866, 707};
 
-// Thick line: w parallel lines stacked downward.
 static void strokeSeg(int x0, int y0, int x1, int y1, uint16_t col, int w)
 {
     for (int k = 0; k < w; k++) canvas.drawLine(x0, y0 + k, x1, y1 + k, col);
 }
 
-// Arc of radius r above (cx, cy), drawn as connected segments.
 static void drawTopArc(int cx, int cy, int r, uint16_t col, int w)
 {
     int px = 0, py = 0;
@@ -545,7 +560,6 @@ static void drawTopArc(int cx, int cy, int r, uint16_t col, int w)
     }
 }
 
-// WiFi: a dot with three arcs. big = widget size, otherwise pill size.
 static void drawWifi(int cx, int cy, uint16_t col, bool big)
 {
     canvas.fillCircle(cx, cy, big ? 2 : 1, col);
@@ -560,7 +574,6 @@ static void drawWifi(int cx, int cy, uint16_t col, bool big)
     }
 }
 
-// Satellite: a body, two solar panels, and an antenna. When on, rings pulse from the antenna.
 static void drawGpsIcon(int cx, int cy, uint16_t col, bool on, int frame)
 {
     canvas.fillRoundRect(cx - 3, cy - 3, 6, 6, 1, col);
@@ -578,7 +591,6 @@ static void drawGpsIcon(int cx, int cy, uint16_t col, bool on, int frame)
     }
 }
 
-// Bluetooth: a bubble with the rune inside.
 static void drawBtBubble(int cx, int cy, bool on)
 {
     canvas.fillCircle(cx, cy, 8, on ? kOnBlue : kOffGrey);
@@ -590,12 +602,11 @@ static void drawBtBubble(int cx, int cy, bool on)
     canvas.drawLine(cx + 3, cy - 2, cx - 3, cy + 4, rune);
 }
 
-// Gear: a toothed ring with a hole. hole = the color behind the icon.
 static void drawGear(int cx, int cy, uint16_t col, uint16_t hole)
 {
-    static const int kToothX[8] = {10, 7, 0, -7, -10, -7, 0, 7};
-    static const int kToothY[8] = {0, 7, 10, 7, 0, -7, -10, -7};
-    canvas.fillCircle(cx, cy, 7, col);
+    static const int kToothX[8] = {9, 6, 0, -6, -9, -6, 0, 6};
+    static const int kToothY[8] = {0, 6, 9, 6, 0, -6, -9, -6};
+    canvas.fillCircle(cx, cy, 6, col);
     for (int k = 0; k < 8; k++) canvas.fillCircle(cx + kToothX[k], cy + kToothY[k], 2, col);
     canvas.fillCircle(cx, cy, 3, hole);
 }
@@ -603,17 +614,19 @@ static void drawGear(int cx, int cy, uint16_t col, uint16_t hole)
 static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
 {
     switch (idx) {
-    case 0: // Public: speech bubble
-        canvas.fillRoundRect(cx - 9, cy - 8, 18, 13, 4, col);
-        canvas.fillTriangle(cx - 6, cy + 4, cx - 1, cy + 4, cx - 7, cy + 9, col);
+    case 0: // Chat: speech bubble with lines
+        canvas.fillRoundRect(cx - 9, cy - 7, 18, 12, 4, col);
+        canvas.fillTriangle(cx - 5, cy + 4, cx, cy + 4, cx - 6, cy + 9, col);
+        canvas.drawFastHLine(cx - 5, cy - 3, 10, fill);
+        canvas.drawFastHLine(cx - 5, cy, 7, fill);
         break;
-    case 1: // Contacts: two people
-        canvas.drawCircle(cx - 4, cy - 4, 3, col);
+    case 1: // Peers: two people silhouettes
+        canvas.fillCircle(cx - 4, cy - 4, 3, col);
+        canvas.fillRoundRect(cx - 9, cy + 1, 10, 7, 3, col);
         canvas.drawCircle(cx + 4, cy - 4, 3, col);
-        canvas.drawRoundRect(cx - 10, cy + 1, 12, 8, 4, col);
-        canvas.drawRoundRect(cx - 2, cy + 1, 12, 8, 4, col);
+        canvas.drawRoundRect(cx, cy + 1, 9, 7, 3, col);
         break;
-    case 2: // Nodes: connected dots
+    case 2: // Nodes: mesh topology triangle
         canvas.drawLine(cx, cy - 7, cx - 8, cy + 6, col);
         canvas.drawLine(cx, cy - 7, cx + 8, cy + 6, col);
         canvas.drawLine(cx - 8, cy + 6, cx + 8, cy + 6, col);
@@ -621,18 +634,18 @@ static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
         canvas.fillCircle(cx - 8, cy + 6, 3, col);
         canvas.fillCircle(cx + 8, cy + 6, 3, col);
         break;
-    case 3: // Spectrum: pulse line
-        canvas.drawLine(cx - 10, cy, cx - 5, cy, col);
-        canvas.drawLine(cx - 5, cy, cx - 2, cy - 7, col);
-        canvas.drawLine(cx - 2, cy - 7, cx + 2, cy + 7, col);
-        canvas.drawLine(cx + 2, cy + 7, cx + 5, cy, col);
-        canvas.drawLine(cx + 5, cy, cx + 10, cy, col);
+    case 3: // Spectrum: 2px crisp waveform
+        strokeSeg(cx - 10, cy, cx - 5, cy, col, 2);
+        strokeSeg(cx - 5, cy, cx - 2, cy - 7, col, 2);
+        strokeSeg(cx - 2, cy - 7, cx + 2, cy + 7, col, 2);
+        strokeSeg(cx + 2, cy + 7, cx + 5, cy, col, 2);
+        strokeSeg(cx + 5, cy, cx + 10, cy, col, 2);
         break;
-    case 4: // Signal: rising bars
-        canvas.fillRect(cx - 9, cy + 2, 3, 6, col);
-        canvas.fillRect(cx - 4, cy - 1, 3, 9, col);
-        canvas.fillRect(cx + 1, cy - 5, 3, 13, col);
-        canvas.fillRect(cx + 6, cy - 9, 3, 17, col);
+    case 4: // Signal: 4 rounded bars
+        canvas.fillRoundRect(cx - 9, cy + 2, 3, 6, 1, col);
+        canvas.fillRoundRect(cx - 4, cy - 1, 3, 9, 1, col);
+        canvas.fillRoundRect(cx + 1, cy - 5, 3, 13, 1, col);
+        canvas.fillRoundRect(cx + 6, cy - 9, 3, 17, 1, col);
         break;
     case 5: // Settings: gear
         drawGear(cx, cy, col, fill);
@@ -642,95 +655,125 @@ static void drawAppIcon(int idx, int cx, int cy, uint16_t col, uint16_t fill)
 
 static void drawHome()
 {
-    useFont();
     drawBackdrop();
     int frame = static_cast<int>(millis() / 180);
 
-    // Status bar: uptime on the left, clock in the center, status icons on the right.
-    uint16_t strip = backdropAt(3);
-    canvas.fillCircle(10, 11, 3, 0x07E0);
+    // --- Top Status Bar ---
+    uint16_t strip = backdropAt(4);
+    canvas.fillCircle(10, 11, 4, mix(0x07E0, strip, 160));
+    canvas.fillCircle(10, 11, 2, 0x07E0);
+
+    useFont();
     unsigned long mins = millis() / 60000;
     char up[24];
     snprintf(up, sizeof(up), "Up %luh %02lum", mins / 60, mins % 60);
     putText(18, 3, up, theme().fg, strip);
-    centerText(160, 3, clockText(), theme().fg, strip);
+    centerText(156, 3, clockText(), theme().fg, strip);
+
     bool linkOn[3] = {wifiOn, gpsOn, btOn};
     const int pillX[3] = {190, 226, 278};
     const int pillW[3] = {32, 48, 28};
     for (int i = 0; i < 3; i++) {
         uint16_t col = linkOn[i] ? kOnBlue : kOffGrey;
-        canvas.fillRoundRect(pillX[i], 3, pillW[i], 16, 8, strip);
+        uint16_t pFill = linkOn[i] ? mix(kOnBlue, strip, 210) : strip;
+        canvas.fillRoundRect(pillX[i], 3, pillW[i], 16, 8, pFill);
         canvas.drawRoundRect(pillX[i], 3, pillW[i], 16, 8, col);
     }
     drawWifi(pillX[0] + 16, 14, linkOn[0] ? kOnBlue : kOffGrey, false);
     drawGpsIcon(pillX[1] + 12, 11, linkOn[1] ? kOnBlue : kOffGrey, linkOn[1], frame);
-    putText(pillX[1] + 24, 4, "GPS", linkOn[1] ? kOnBlue : kOffGrey, strip);
+    useFontSmall();
+    putText(pillX[1] + 24, 7, "GPS", linkOn[1] ? kOnBlue : kOffGrey, linkOn[1] ? mix(kOnBlue, strip, 210) : strip);
     drawBtBubble(pillX[2] + 14, 11, linkOn[2]);
-    canvas.drawFastHLine(0, 22, 320, theme().accent);
+    canvas.drawFastHLine(0, 23, 320, mix(theme().accent, bgColor(), 140));
 
-    // Alerts card (left).
-    drawPanel(6, 32, 150, 98);
-    putText(16, 38, "ALERTS", theme().accent, glassBase());
+    // --- Left Card: Mesh Telemetry & Alerts ---
+    drawPanel(6, 30, 150, 100);
+    useFontSmall();
+    putText(16, 37, "MESH TELEMETRY", theme().accent, glassBase());
+
+    // SNR Pill
     char snr[16];
     snprintf(snr, sizeof(snr), "SNR %+.1f", lastSnr);
-    uint16_t pill = mix(theme().panel, theme().accent, 60);
-    canvas.fillRoundRect(78, 36, 72, 15, 7, pill);
-    centerText(114, 37, snr, theme().accent, pill);
+    uint16_t pill = mix(theme().accent, glassBase(), 195);
+    canvas.fillRoundRect(92, 34, 56, 14, 7, pill);
+    centerText(120, 37, snr, theme().accent, pill);
 
-    String lastMsg = chatLines.empty() ? String("No public messages") : chatLines.back();
-    if (lastMsg.length() > 11) lastMsg = lastMsg.substring(0, 11);
+    // Big Node Count Stat + Radio Frequency Info
+    uint16_t subBg = subCardBase();
+    canvas.fillRoundRect(12, 52, 54, 46, 7, subBg);
+    canvas.drawRoundRect(12, 52, 54, 46, 7, mix(theme().accent, subBg, 180));
     char heard[12];
     snprintf(heard, sizeof(heard), "%u", (unsigned)nodes.size());
-    glassCard(12, 56, 138, 16, 5);
-    putText(18, 57, "Nodes heard", theme().fg, glassBase());
-    canvas.fillRoundRect(124, 57, 20, 13, 6, theme().accent);
-    centerText(134, 57, heard, bgColor(), theme().accent);
+    useFontLarge();
+    centerText(39, 57, heard, theme().accent, subBg);
+    useFontSmall();
+    centerText(39, 84, "NODES", mutedText(), subBg);
 
-    glassCard(12, 76, 138, 16, 5);
-    String lastLine = String("Last: ") + lastMsg;
-    putText(18, 77, lastLine.c_str(), theme().fg, glassBase());
-    canvas.fillCircle(144, 84, 3, chatLines.empty() ? kMuted : 0x07E0);
+    // Right sub-stack: Frequency & Preset
+    canvas.fillRoundRect(70, 52, 80, 21, 6, subBg);
+    useFont();
+    putText(76, 54, "LongFast", theme().fg, subBg);
 
-    glassCard(12, 96, 138, 16, 5);
-    putText(18, 97, "LongFast 906.9 MHz", theme().fg, glassBase());
+    canvas.fillRoundRect(70, 77, 80, 21, 6, subBg);
+    putText(76, 79, "906.9 MHz", theme().accent, subBg);
 
-    // Widget card (right): WiFi, GPS, Bluetooth with logos and toggles.
-    drawPanel(164, 32, 150, 98);
-    putText(174, 35, "WIDGETS", theme().accent, glassBase());
-    putText(270, 35, "PWR", kMuted, glassBase());
+    // Bottom Row: Latest Message Preview
+    canvas.fillRoundRect(12, 103, 138, 20, 6, subBg);
+    canvas.fillCircle(20, 113, 3, chatLines.empty() ? mutedText() : 0x07E0);
+    String lastMsg = chatLines.empty() ? String("No mesh traffic") : chatLines.back();
+    if (lastMsg.length() > 17) lastMsg = lastMsg.substring(0, 16) + "..";
+    useFont();
+    putText(28, 105, lastMsg.c_str(), chatLines.empty() ? mutedText() : theme().fg, subBg);
+
+    // --- Right Card: Quick Radio Toggles (Widgets) ---
+    drawPanel(164, 30, 150, 100);
+    useFontSmall();
+    putText(174, 37, "RADIOS", theme().accent, glassBase());
+    putText(284, 37, "PWR", mutedText(), glassBase());
+
     const char *names[3] = {"WiFi", "GPS", "BT"};
     for (int i = 0; i < 3; i++) {
         int x = 176 + i * 46;
         bool sel = (homeSel == kWidgetFirst + i);
-        if (sel) canvas.drawRoundRect(x - 6, 52, 46, 76, 8, theme().accent);
-        uint16_t col = linkOn[i] ? kOnBlue : kOffGrey;
-        if (i == 0) drawWifi(x + 18, 66, col, true);
-        else if (i == 1) drawGpsIcon(x + 18, 64, col, linkOn[1], frame);
-        else drawBtBubble(x + 18, 62, linkOn[2]);
-        centerText(x + 18, 74, names[i], theme().fg, glassBase());
-        drawToggle(x, 90, linkOn[i]);
-        centerText(x + 18, 112, linkOn[i] ? "ON" : "OFF", col, glassBase());
-    }
-    canvas.drawFastVLine(219, 56, 66, kBorder);
-    canvas.drawFastVLine(265, 56, 66, kBorder);
+        uint16_t slotBg = sel ? mix(theme().accent, glassBase(), 210) : subCardBase();
+        canvas.fillRoundRect(x - 5, 50, 46, 73, 7, slotBg);
+        if (sel) {
+            canvas.drawRoundRect(x - 5, 50, 46, 73, 7, theme().accent);
+        }
 
-    // Apps card: six icon tiles.
-    drawPanel(6, 136, 308, 92);
-    putText(16, 142, "APPS", theme().accent, glassBase());
-    putText(190, 142, "Trackball / Tap", kMuted, glassBase());
-    static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Set"};
+        uint16_t col = linkOn[i] ? kOnBlue : mutedText();
+        if (i == 0) drawWifi(x + 18, 65, col, true);
+        else if (i == 1) drawGpsIcon(x + 18, 63, col, linkOn[1], frame);
+        else drawBtBubble(x + 18, 61, linkOn[2]);
+
+        useFont();
+        centerText(x + 18, 74, names[i], theme().fg, slotBg);
+        drawToggle(x, 93, linkOn[i]);
+        useFontSmall();
+        centerText(x + 18, 114, linkOn[i] ? "ON" : "OFF", linkOn[i] ? theme().accent : mutedText(), slotBg);
+    }
+
+    // --- Bottom Card: App Launcher Dock ---
+    drawPanel(6, 136, 308, 96);
+    useFontSmall();
+    putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
+    putText(224, 143, "TRACKBALL / TAP", mutedText(), glassBase());
+
+    static const char *kShort[kTileCount] = {"Chat", "Peers", "Nodes", "Spec", "Signal", "Setup"};
     for (int i = 0; i < kTileCount; i++) {
-        int cx = 26 + i * 53, cy = 176;
+        int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
         if (sel) {
-            canvas.fillCircle(cx, cy, 17, theme().accent);
-            drawAppIcon(i, cx, cy, bgColor(), theme().accent);
+            canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, theme().accent);
+            drawAppIcon(i, cx, cy, isLightTheme() ? TFT_WHITE : bgColor(), theme().accent);
         } else {
-            canvas.fillCircle(cx, cy, 17, glassBase());
-            canvas.drawCircle(cx, cy, 17, theme().accent);
-            drawAppIcon(i, cx, cy, theme().accent, glassBase());
+            uint16_t tileBg = subCardBase();
+            canvas.fillRoundRect(cx - 20, cy - 20, 40, 40, 11, tileBg);
+            canvas.drawRoundRect(cx - 20, cy - 20, 40, 40, 11, mix(theme().accent, tileBg, 165));
+            drawAppIcon(i, cx, cy, theme().accent, tileBg);
         }
-        centerText(cx, 199, kShort[i], sel ? theme().accent : theme().fg, glassBase());
+        useFont();
+        centerText(cx, 204, kShort[i], sel ? theme().accent : theme().fg, glassBase());
     }
 }
 
@@ -738,30 +781,35 @@ static void drawPublic()
 {
     useFont();
     drawBackdrop();
-    drawHeader("Public chat");
+    drawHeader("Public Channel");
     // Settings shortcut, top right.
-    canvas.fillRoundRect(256, 2, 60, 18, 8, theme().accent);
-    centerText(286, 3, "SET", bgColor(), theme().accent);
+    canvas.fillRoundRect(256, 3, 58, 17, 6, theme().accent);
+    centerText(285, 4, "SETUP", isLightTheme() ? TFT_WHITE : bgColor(), theme().accent);
 
-    // Newest messages as rounded rows.
-    size_t first = chatLines.size() > 9 ? chatLines.size() - 9 : 0;
+    // Newest messages as distinct chat rows.
+    size_t first = chatLines.size() > 8 ? chatLines.size() - 8 : 0;
     int row = 0;
     for (size_t i = first; i < chatLines.size(); i++, row++) {
-        int y = 28 + row * 19;
-        glassCard(4, y, 312, 17, 6);
-        putText(12, y + 1, chatLines[i].c_str(), theme().fg, glassBase());
+        int y = 28 + row * 21;
+        bool isMe = chatLines[i].startsWith("me: ");
+        uint16_t rowBg = isMe ? mix(theme().accent, glassBase(), 205) : glassBase();
+        canvas.fillRoundRect(6, y, 308, 18, 6, rowBg);
+        if (isMe) {
+            canvas.drawRoundRect(6, y, 308, 18, 6, mix(theme().accent, rowBg, 130));
+        }
+        putText(14, y + 1, chatLines[i].c_str(), isMe ? theme().accent : theme().fg, rowBg);
     }
 
-    // Composer.
-    drawPanel(4, 200, 312, 34);
-    putText(12, 209, ">", theme().accent, glassBase());
+    // Composer bar.
+    glassCard(6, 200, 308, 34, 8, inputBuf.length() > 0);
+    putText(14, 209, ">", theme().accent, glassBase());
     if (inputBuf.length() == 0) {
-        putText(26, 209, "Message the mesh", kMuted, glassBase());
+        putText(28, 209, "Broadcast to LongFast...", mutedText(), glassBase());
     } else {
-        int start = inputBuf.length() > 34 ? static_cast<int>(inputBuf.length()) - 34 : 0;
+        int start = inputBuf.length() > 33 ? static_cast<int>(inputBuf.length()) - 33 : 0;
         String shown = inputBuf.substring(start);
         if ((millis() / 500) % 2 == 0) shown += "_";
-        putText(26, 209, shown.c_str(), theme().fg, glassBase());
+        putText(28, 209, shown.c_str(), theme().fg, glassBase());
     }
 }
 
@@ -770,37 +818,41 @@ static void drawNodes()
     useFont();
     drawBackdrop();
     char title[24];
-    snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
+    snprintf(title, sizeof(title), "Mesh Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
 
     if (nodes.empty()) {
-        drawPanel(16, 70, 288, 72);
-        centerText(160, 86, "No nodes heard yet", theme().fg, glassBase());
-        centerText(160, 108, "Nearby Meshtastic nodes show here", kMuted, glassBase());
+        drawPanel(16, 68, 288, 84);
+        centerText(160, 86, "Listening on 906.875 MHz...", theme().fg, glassBase());
+        useFontSmall();
+        centerText(160, 114, "NEARBY MESHTASTIC NODES APPEAR HERE", mutedText(), glassBase());
         return;
     }
 
     uint32_t now = millis();
     for (size_t i = 0; i < nodes.size() && i < 6; i++) {
-        int y = 30 + static_cast<int>(i) * 32;
-        glassCard(6, y, 308, 27, 7);
+        int y = 30 + static_cast<int>(i) * 33;
+        glassCard(6, y, 308, 28, 7, false);
 
+        // Node badge
+        uint16_t badgeBg = mix(theme().accent, glassBase(), 200);
+        canvas.fillRoundRect(12, y + 4, 78, 20, 5, badgeBg);
         char id[12];
         snprintf(id, sizeof(id), "%08lX", (unsigned long)nodes[i].id);
-        putText(14, y + 5, id, theme().accent, glassBase());
+        centerText(51, y + 6, id, theme().accent, badgeBg);
 
         // Signal bar: -120 dBm (empty) to -50 dBm (full).
         int r = static_cast<int>(nodes[i].rssi);
         if (r < -120) r = -120;
         if (r > -50) r = -50;
-        int bar = (r + 120) * 70 / 70;
+        int bar = (r + 120) * 76 / 70;
         uint16_t col = r > -90 ? 0x07E0 : (r > -105 ? theme().accent : 0xFD20);
-        canvas.fillRoundRect(104, y + 10, 70, 6, 3, kTrackOff);
-        canvas.fillRoundRect(104, y + 10, bar, 6, 3, col);
+        canvas.fillRoundRect(100, y + 11, 76, 6, 3, isLightTheme() ? 0xC618 : kTrackOff);
+        if (bar > 2) canvas.fillRoundRect(100, y + 11, bar, 6, 3, col);
 
         char info[24];
-        snprintf(info, sizeof(info), "%ddBm %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
-        putText(184, y + 5, info, theme().fg, glassBase());
+        snprintf(info, sizeof(info), "%ddBm  %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
+        putText(186, y + 6, info, theme().fg, glassBase());
     }
 }
 
@@ -810,42 +862,41 @@ static bool isSettingsScreen(Screen s)
            s == Screen::SettingsGps || s == Screen::SettingsDisplay;
 }
 
-// Labels for the rows of one settings screen. Returns the row count.
 static int buildSettingItems(Screen s, char items[][40])
 {
     switch (s) {
     case Screen::Settings:
-        snprintf(items[0], 40, "Device");
-        snprintf(items[1], 40, "LoRa radio");
-        snprintf(items[2], 40, "GPS");
-        snprintf(items[3], 40, "Display");
-        snprintf(items[4], 40, "Calibrate touch");
-        snprintf(items[5], 40, "Back");
+        snprintf(items[0], 40, "Device Identity");
+        snprintf(items[1], 40, "LoRa Radio");
+        snprintf(items[2], 40, "GPS Receiver");
+        snprintf(items[3], 40, "Display & Theme");
+        snprintf(items[4], 40, "Calibrate Touchscreen");
+        snprintf(items[5], 40, "Back to Home");
         return 6;
     case Screen::SettingsDevice:
         snprintf(items[0], 40, "Node ID: %08lX", (unsigned long)myNode);
         snprintf(items[1], 40, "Role: Client");
         snprintf(items[2], 40, "Clock: %s", clockText());
-        snprintf(items[3], 40, "Short name: %04lX", (unsigned long)(myNode & 0xFFFF));
+        snprintf(items[3], 40, "Short Name: %04lX", (unsigned long)(myNode & 0xFFFF));
         snprintf(items[4], 40, "Back");
         return 5;
     case Screen::SettingsLora:
-        snprintf(items[0], 40, "Region: US 902-928");
-        snprintf(items[1], 40, "Preset: LongFast");
+        snprintf(items[0], 40, "Region: US 902-928 MHz");
+        snprintf(items[1], 40, "Modem: LongFast");
         snprintf(items[2], 40, "Frequency: %.3f MHz", loraFreqMHz);
-        snprintf(items[3], 40, "TX power: %d dBm (reboot)", txDbm);
-        snprintf(items[4], 40, "Hop limit: %d", hopLimit);
+        snprintf(items[3], 40, "TX Power: %d dBm (reboot)", txDbm);
+        snprintf(items[4], 40, "Hop Limit: %d hops", hopLimit);
         snprintf(items[5], 40, "Back");
         return 6;
     case Screen::SettingsGps:
-        snprintf(items[0], 40, "GPS: %s", gpsOn ? "on" : "off");
-        snprintf(items[1], 40, "Update every: %s", kGpsIntervals[gpsIntervalIdx]);
-        snprintf(items[2], 40, "Altitude: no fix");
+        snprintf(items[0], 40, "GPS Power: %s", gpsOn ? "ON" : "OFF");
+        snprintf(items[1], 40, "Update Interval: %s", kGpsIntervals[gpsIntervalIdx]);
+        snprintf(items[2], 40, "Fix Status: No Fix");
         snprintf(items[3], 40, "Back");
         return 4;
     case Screen::SettingsDisplay:
         snprintf(items[0], 40, "Theme: %s", kThemes[themeIndex].name);
-        snprintf(items[1], 40, "Background: %s", kBackgroundNames[bgIndex]);
+        snprintf(items[1], 40, "Backdrop: %s", kBackgroundNames[bgIndex]);
         snprintf(items[2], 40, "Back");
         return 3;
     default:
@@ -859,10 +910,10 @@ static void drawSettingsScreen(Screen s)
     drawBackdrop();
     const char *title = "Settings";
     switch (s) {
-    case Screen::SettingsDevice:  title = "Device"; break;
-    case Screen::SettingsLora:    title = "LoRa radio"; break;
-    case Screen::SettingsGps:     title = "GPS"; break;
-    case Screen::SettingsDisplay: title = "Display"; break;
+    case Screen::SettingsDevice:  title = "Device Identity"; break;
+    case Screen::SettingsLora:    title = "LoRa Radio"; break;
+    case Screen::SettingsGps:     title = "GPS Receiver"; break;
+    case Screen::SettingsDisplay: title = "Display & Theme"; break;
     default: break;
     }
     drawHeader(title);
@@ -870,19 +921,39 @@ static void drawSettingsScreen(Screen s)
     int n = buildSettingItems(s, items);
     if (settingsSel >= n) settingsSel = n - 1;
     if (settingsSel < 0) settingsSel = 0;
+
     for (int i = 0; i < n; i++) {
-        int y = 36 + i * 26;
+        int y = 32 + i * 28;
         bool sel = (i == settingsSel);
+        uint16_t rowBg = sel ? theme().accent : glassBase();
+        uint16_t rowFg = sel ? (isLightTheme() ? TFT_WHITE : bgColor()) : theme().fg;
+
         if (sel) {
-            canvas.fillRoundRect(6, y, 308, 22, 6, theme().accent);
-            putText(14, y + 3, items[i], bgColor(), theme().accent);
+            canvas.fillRoundRect(8, y, 304, 24, 7, rowBg);
         } else {
-            glassCard(6, y, 308, 22, 6);
-            putText(14, y + 3, items[i], theme().fg, glassBase());
+            glassCard(8, y, 304, 24, 7, false);
+        }
+
+        // Split "Label: Value" into left label and right value badge when ':' is present
+        char *colon = strchr(items[i], ':');
+        if (colon != nullptr) {
+            *colon = '\0';
+            const char *val = colon + 2;
+            putText(18, y + 4, items[i], rowFg, rowBg);
+
+            uint16_t valBg = sel ? mix(rowFg, rowBg, 210) : subCardBase();
+            uint16_t valFg = sel ? rowFg : theme().accent;
+            int vw = static_cast<int>(canvas.textWidth(val)) + 12;
+            canvas.fillRoundRect(304 - vw, y + 3, vw, 18, 5, valBg);
+            centerText(304 - vw / 2, y + 4, val, valFg, valBg);
+        } else {
+            putText(18, y + 4, items[i], rowFg, rowBg);
+            if (i < n - 1) {
+                putText(294, y + 4, ">", sel ? rowFg : mutedText(), rowBg);
+            }
         }
     }
 }
-
 static void drawSoon()
 {
     useFont();
