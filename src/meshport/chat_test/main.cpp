@@ -220,7 +220,7 @@ static const Theme kThemes[] = {
 static constexpr int kThemeCount = 3;
 static int themeIndex = 0;
 
-enum class Screen { Home, Public, Nodes, Settings, Soon };
+enum class Screen { Home, Public, Nodes, Settings, Spectrum, Signal, Soon };
 static Screen screen = Screen::Home;
 static int homeSel = 0;
 static int settingsSel = 0;
@@ -249,6 +249,36 @@ static void noteNode(uint32_t id, float rssi)
 }
 
 static const Theme &theme() { return kThemes[themeIndex]; }
+
+// Spectrum and signal analyzers.
+static float loraFreqMHz = 906.875f;
+static constexpr int kSpecPoints = 52;   // 902.0 MHz to 927.5 MHz in 0.5 MHz steps
+static float specDb[kSpecPoints];
+static bool specScanned = false;
+static constexpr size_t kSignalSamples = 60;
+static std::vector<float> rssiHist;
+static float lastSnr = 0;
+
+static void pushRssi(float rssi)
+{
+    rssiHist.push_back(rssi);
+    if (rssiHist.size() > kSignalSamples) rssiHist.erase(rssiHist.begin());
+}
+
+static void sweepSpectrum()
+{
+    for (int i = 0; i < kSpecPoints; i++) {
+        float f = 902.0f + 0.5f * i;
+        radio->setFrequency(f);
+        radio->startReceive();
+        delayMicroseconds(3000);
+        specDb[i] = radio->getRSSI();
+    }
+    radio->setFrequency(loraFreqMHz);
+    radio->startReceive();
+    specScanned = true;
+    Serial.println("spectrum sweep done");
+}
 
 static const uint16_t kBackgrounds[] = {TFT_BLACK, TFT_NAVY, 0x2104, TFT_DARKGREEN};
 static const char *kBackgroundNames[] = {"Black", "Navy", "Charcoal", "Forest"};
@@ -406,14 +436,79 @@ static void drawSoon()
     lcd.print("q: back");
 }
 
+static void drawSpectrum()
+{
+    lcd.fillScreen(bgColor());
+    drawHeader("Spectrum 902-928 MHz");
+    if (!specScanned) {
+        lcd.setTextColor(theme().fg, bgColor());
+        lcd.setTextSize(2);
+        lcd.setCursor(0, 100);
+        lcd.print("Press Enter to scan");
+    } else {
+        for (int i = 0; i < kSpecPoints; i++) {
+            float level = constrain(specDb[i], -120.0f, -50.0f);
+            int h = static_cast<int>((level + 120.0f) / 70.0f * 170.0f);
+            int x = 4 + i * 6;
+            lcd.fillRect(x, 220 - h, 5, h, theme().accent);
+        }
+    }
+    lcd.setTextColor(theme().accent, bgColor());
+    lcd.setTextSize(1);
+    lcd.setCursor(0, 226);
+    lcd.print("Enter: scan   q: back");
+}
+
+static void drawSignal()
+{
+    lcd.fillScreen(bgColor());
+    drawHeader("Signal");
+    lcd.drawLine(0, 30, 319, 30, theme().fg);
+    lcd.drawLine(0, 220, 319, 220, theme().fg);
+    for (size_t i = 1; i < rssiHist.size(); i++) {
+        auto yOf = [](float r) {
+            float v = constrain(r, -130.0f, -40.0f);
+            return static_cast<int>(220 - (v + 130.0f) / 90.0f * 190.0f);
+        };
+        int x0 = static_cast<int>((i - 1) * 5), x1 = static_cast<int>(i * 5);
+        lcd.drawLine(x0, yOf(rssiHist[i - 1]), x1, yOf(rssiHist[i]), theme().accent);
+    }
+    lcd.setTextColor(theme().fg, bgColor());
+    lcd.setTextSize(1);
+    lcd.setCursor(0, 226);
+    char line[48];
+    float last = rssiHist.empty() ? 0 : rssiHist.back();
+    snprintf(line, sizeof(line), "last RSSI %.0f dBm  SNR %.1f dB  q: back", last, lastSnr);
+    lcd.print(line);
+}
+
+static void drawContacts()
+{
+    lcd.fillScreen(bgColor());
+    drawHeader("Contacts");
+    lcd.setTextColor(theme().fg, bgColor());
+    lcd.setTextSize(2);
+    lcd.setCursor(0, 60);
+    lcd.print("Encrypted contacts");
+    lcd.setCursor(0, 84);
+    lcd.print("come next, after the");
+    lcd.setCursor(0, 108);
+    lcd.print("two-device test.");
+    lcd.setTextColor(theme().accent, bgColor());
+    lcd.setCursor(0, 220);
+    lcd.print("q: back");
+}
+
 static void drawScreen()
 {
     switch (screen) {
+    case Screen::Spectrum: drawSpectrum(); break;
+    case Screen::Signal: drawSignal(); break;
+    case Screen::Soon: drawContacts(); break;
     case Screen::Home: drawHome(); break;
     case Screen::Public: drawPublic(); break;
     case Screen::Nodes: drawNodes(); break;
     case Screen::Settings: drawSettings(); break;
-    case Screen::Soon: drawSoon(); break;
     }
 }
 
@@ -428,6 +523,12 @@ static void openTile(int i)
     case 0: screen = Screen::Public; break;
     case 2: screen = Screen::Nodes; break;
     case 5: screen = Screen::Settings; settingsSel = 0; break;
+    case 3:
+        screen = Screen::Spectrum;
+        break;
+    case 4:
+        screen = Screen::Signal;
+        break;
     default:
         soonName = kTiles[i];
         screen = Screen::Soon;
@@ -498,6 +599,8 @@ static void handleKey(int c)
         else if (c == 's') settingsSel = (settingsSel + 1) % kSettingsCount;
         else if (c == '\r' || c == '\n') activateSetting(settingsSel);
         else if (c == 'q' || c == 8 || c == 127) goHome();
+    } else if (screen == Screen::Spectrum && (c == 'r' || c == '\r' || c == '\n')) {
+        sweepSpectrum();
     } else {
         if (c == 'q' || c == 8 || c == 127) goHome();
     }
@@ -614,6 +717,8 @@ static void handleTouchTap(uint16_t x, uint16_t y)
         } else if (sy < 18) {
             goHome();
         }
+    } else if (screen == Screen::Spectrum && sy >= 18) {
+        sweepSpectrum();
     } else if (sy < 18) {
         goHome();
     }
@@ -691,6 +796,7 @@ void setup()
     myNode = nodeNumberFromPublicKey(me.pub);
     packetCounter = (uint32_t)random(1, 0x7fffffff);
     channelByte = static_cast<uint8_t>(channelHash("LongFast", kChannelKey, sizeof(kChannelKey)));
+    loraFreqMHz = freq;
     Serial.printf("radio ok: %.3f MHz\n", freq);
     showId();
     Serial.println("type help for commands");
@@ -736,6 +842,8 @@ void loop()
             Header seen = unpackHeader(rx.data());
             if (seen.from != myNode) {
                 noteNode(seen.from, rssi);
+                pushRssi(rssi);
+                lastSnr = snr;
             }
         }
 #endif
