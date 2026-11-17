@@ -795,7 +795,7 @@ static void loadCal()
 {
     Preferences p;
     p.begin("meshport", true);
-    if (p.getBytesLength("cal") == sizeof(cal)) p.getBytes("cal", &cal, sizeof(cal));
+    if (p.getBytesLength("calv2") == sizeof(cal)) p.getBytes("calv2", &cal, sizeof(cal));
     p.end();
 }
 
@@ -803,15 +803,17 @@ static void saveCal()
 {
     Preferences p;
     p.begin("meshport", false);
-    p.putBytes("cal", &cal, sizeof(cal));
+    p.putBytes("calv2", &cal, sizeof(cal));
     p.end();
 }
 
 static void touchToScreen(uint16_t x, uint16_t y, int &sx, int &sy)
 {
     if (!cal.valid) {
-        sx = constrain(319 - static_cast<int>(y), 0, 319);
-        sy = constrain(static_cast<int>(x), 0, 239);
+        // Mapping verified on this panel (Wadamesh T-Deck driver): screen x follows touch y,
+        // screen y is the mirrored touch x.
+        sx = constrain(static_cast<int>(y), 0, 319);
+        sy = constrain(239 - static_cast<int>(x), 0, 239);
         return;
     }
     int32_t v = cal.swap ? static_cast<int32_t>(y) : static_cast<int32_t>(x);
@@ -918,7 +920,12 @@ static void pollTouch()
     last = millis();
     uint8_t status = 0;
     if (!gt911Read(0x814E, &status, 1)) return;
-    if (!(status & 0x80)) return;
+    static uint32_t lastFrame = 0;
+    if (!(status & 0x80)) {
+        if (wasDown && millis() - lastFrame > 250) wasDown = false;
+        return;
+    }
+    lastFrame = millis();
     uint8_t points = status & 0x0F;
     if (points > 0) {
         uint8_t p[8];
