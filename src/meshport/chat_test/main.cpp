@@ -844,10 +844,21 @@ static void computeCal()
         cal.T = (static_cast<int32_t>(calRawY[0]) + calRawY[1]) / 2;
         cal.B = (static_cast<int32_t>(calRawY[2]) + calRawY[3]) / 2;
     }
+    int32_t spanX = cal.R - cal.L;
+    if (spanX < 0) spanX = -spanX;
+    int32_t spanY = cal.B - cal.T;
+    if (spanY < 0) spanY = -spanY;
+    Serial.printf("touch calibration swap=%u L=%ld R=%ld T=%ld B=%ld spanX=%ld spanY=%ld\n", cal.swap,
+                  (long)cal.L, (long)cal.R, (long)cal.T, (long)cal.B, (long)spanX, (long)spanY);
+    if (spanX < 200 || spanY < 200) {
+        cal.valid = 0;
+        saveCal();
+        Serial.println("calibration rejected: taps too close together, run it again");
+        return;
+    }
     cal.valid = 1;
     saveCal();
-    Serial.printf("touch calibrated swap=%u L=%ld R=%ld T=%ld B=%ld\n", cal.swap, (long)cal.L, (long)cal.R,
-                  (long)cal.T, (long)cal.B);
+    Serial.println("calibration saved");
 }
 
 static void recordCalTap(uint16_t x, uint16_t y)
