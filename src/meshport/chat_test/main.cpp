@@ -324,10 +324,11 @@ static void addLine(const String &s)
 
 static void drawHeader(const String &title)
 {
-    canvas.fillRect(0, 0, 320, 18, theme().accent);
-    canvas.setTextColor(bgColor(), theme().accent);
+    canvas.fillRect(0, 0, 320, 22, theme().panel);
+    canvas.fillRect(0, 21, 320, 2, theme().accent);
     canvas.setTextSize(2);
-    canvas.setCursor(4, 1);
+    canvas.setTextColor(theme().accent, theme().panel);
+    canvas.setCursor(8, 3);
     canvas.print(title);
 }
 
@@ -424,15 +425,23 @@ static void drawPublic()
 {
     canvas.fillScreen(bgColor());
     drawHeader("Public chat");
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setTextSize(2);
-    for (size_t i = 0; i < chatLines.size(); i++) {
-        canvas.setCursor(0, 22 + static_cast<int>(i) * 16);
+    // Newest messages in rounded rows, input in its own panel at the bottom.
+    size_t first = chatLines.size() > 9 ? chatLines.size() - 9 : 0;
+    int row = 0;
+    for (size_t i = first; i < chatLines.size(); i++, row++) {
+        int y = 28 + row * 19;
+        canvas.fillRoundRect(4, y, 312, 17, 6, theme().panel);
+        canvas.setTextSize(1);
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(10, y + 5);
         canvas.print(chatLines[i]);
     }
-    canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 220);
+    drawPanel(4, 200, 312, 34);
+    canvas.setTextSize(2);
+    canvas.setTextColor(theme().accent, theme().panel);
+    canvas.setCursor(12, 210);
     canvas.print("> ");
+    canvas.setTextColor(theme().fg, theme().panel);
     canvas.print(inputBuf.substring(0, kLineChars - 2));
 }
 
@@ -442,22 +451,39 @@ static void drawNodes()
     char title[24];
     snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
-    canvas.setTextColor(theme().fg, bgColor());
-    canvas.setTextSize(2);
     uint32_t now = millis();
-    for (size_t i = 0; i < nodes.size(); i++) {
-        char line[32];
-        snprintf(line, sizeof(line), "%08lX %4.0fdBm %lus", (unsigned long)nodes[i].id, nodes[i].rssi,
-                 (unsigned long)((now - nodes[i].lastMs) / 1000));
-        canvas.setCursor(0, 22 + static_cast<int>(i) * 16);
-        canvas.print(line);
-    }
     if (nodes.empty()) {
-        canvas.setCursor(0, 22);
+        drawPanel(4, 40, 312, 60);
+        canvas.setTextSize(2);
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(16, 60);
         canvas.print("No nodes heard yet");
     }
+    for (size_t i = 0; i < nodes.size() && i < 9; i++) {
+        int y = 28 + static_cast<int>(i) * 21;
+        canvas.fillRoundRect(4, y, 312, 18, 6, theme().panel);
+        canvas.setTextSize(1);
+        canvas.setTextColor(theme().accent, theme().panel);
+        char id[12];
+        snprintf(id, sizeof(id), "%08lX", (unsigned long)nodes[i].id);
+        canvas.setCursor(10, y + 5);
+        canvas.print(id);
+        // Signal bar: -120 dBm (empty) to -50 dBm (full).
+        int r = static_cast<int>(nodes[i].rssi);
+        if (r < -120) r = -120;
+        if (r > -50) r = -50;
+        int bar = (r + 120) * 80 / 70;
+        canvas.fillRect(100, y + 6, 80, 6, 0x2104);
+        canvas.fillRect(100, y + 6, bar, 6, theme().accent);
+        char info[24];
+        snprintf(info, sizeof(info), "%ddBm %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(190, y + 5);
+        canvas.print(info);
+    }
+    canvas.setTextSize(1);
     canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 220);
+    canvas.setCursor(4, 224);
     canvas.print("q: back");
 }
 
@@ -500,72 +526,81 @@ static void drawSoon()
     canvas.print("q: back");
 }
 
+static int signalY(float rssi)
+{
+    int v = static_cast<int>(rssi);
+    if (v < -130) v = -130;
+    if (v > -40) v = -40;
+    return 186 - (v + 130) * 160 / 90;
+}
+
 static void drawSpectrum()
 {
     canvas.fillScreen(bgColor());
     drawHeader("Spectrum 902-928 MHz");
+    drawPanel(4, 28, 312, 168);
     if (!specScanned) {
-        canvas.setTextColor(theme().fg, bgColor());
         canvas.setTextSize(2);
-        canvas.setCursor(0, 100);
+        canvas.setTextColor(theme().fg, theme().panel);
+        canvas.setCursor(40, 100);
         canvas.print("Press Enter to scan");
     } else {
         for (int i = 0; i < kSpecPoints; i++) {
             int level = specDb[i];
             if (level < -120) level = -120;
             if (level > -50) level = -50;
-            int h = (level + 120) * 170 / 70;
-            int x = 4 + i * 6;
-            canvas.fillRect(x, 220 - h, 5, h, theme().accent);
+            int h = (level + 120) * 150 / 70;
+            canvas.fillRect(12 + i * 5, 186 - h, 4, h, theme().accent);
         }
     }
-    canvas.setTextColor(theme().accent, bgColor());
     canvas.setTextSize(1);
-    canvas.setCursor(0, 226);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setCursor(4, 204);
+    canvas.print("902 MHz");
+    canvas.setCursor(260, 204);
+    canvas.print("927 MHz");
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(4, 224);
     canvas.print("Enter: scan   q: back");
-}
-
-static int signalY(float rssi)
-{
-    int v = static_cast<int>(rssi);
-    if (v < -130) v = -130;
-    if (v > -40) v = -40;
-    return 220 - (v + 130) * 190 / 90;
 }
 
 static void drawSignal()
 {
     canvas.fillScreen(bgColor());
     drawHeader("Signal");
-    canvas.drawLine(0, 30, 319, 30, theme().fg);
-    canvas.drawLine(0, 220, 319, 220, theme().fg);
+    drawPanel(4, 28, 312, 168);
+    canvas.drawFastHLine(10, signalY(-60), 300, 0x2104);
+    canvas.drawFastHLine(10, signalY(-100), 300, 0x2104);
     for (size_t i = 1; i < rssiHist.size(); i++) {
-        int x0 = static_cast<int>((i - 1) * 5), x1 = static_cast<int>(i * 5);
+        int x0 = 10 + static_cast<int>((i - 1) * 5), x1 = 10 + static_cast<int>(i * 5);
         canvas.drawLine(x0, signalY(rssiHist[i - 1]), x1, signalY(rssiHist[i]), theme().accent);
     }
-    canvas.setTextColor(theme().fg, bgColor());
     canvas.setTextSize(1);
-    canvas.setCursor(0, 226);
+    canvas.setTextColor(theme().fg, bgColor());
+    canvas.setCursor(4, 204);
     char line[48];
     float last = rssiHist.empty() ? 0 : rssiHist.back();
-    snprintf(line, sizeof(line), "last RSSI %.0f dBm  SNR %.1f dB  q: back", last, lastSnr);
+    snprintf(line, sizeof(line), "RSSI %.0f dBm   SNR %.1f dB", last, lastSnr);
     canvas.print(line);
+    canvas.setTextColor(theme().accent, bgColor());
+    canvas.setCursor(4, 224);
+    canvas.print("q: back");
 }
 
 static void drawContacts()
 {
     canvas.fillScreen(bgColor());
     drawHeader("Contacts");
-    canvas.setTextColor(theme().fg, bgColor());
+    drawPanel(4, 34, 312, 120);
     canvas.setTextSize(2);
-    canvas.setCursor(0, 60);
+    canvas.setTextColor(theme().fg, theme().panel);
+    canvas.setCursor(16, 52);
     canvas.print("Encrypted contacts");
-    canvas.setCursor(0, 84);
-    canvas.print("come next, after the");
-    canvas.setCursor(0, 108);
-    canvas.print("two-device test.");
+    canvas.setTextSize(1);
+    canvas.setCursor(16, 84);
+    canvas.print("Coming after the two-device test.");
     canvas.setTextColor(theme().accent, bgColor());
-    canvas.setCursor(0, 220);
+    canvas.setCursor(4, 224);
     canvas.print("q: back");
 }
 
