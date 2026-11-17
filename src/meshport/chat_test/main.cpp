@@ -259,6 +259,14 @@ static constexpr int kAppCount = 7;   // Chat, Maps, Nodes, Spec, Signal, Setup,
 static int appCount = kAppCount;              // apps in the launcher
 static int appOrder[kAppMax] = {0, 1, 2, 3, 4, 5, 6};   // app ids in launcher order (saved)
 static const char *kAppNames[kAppCount] = {"Chat", "Maps", "Nodes", "Spec", "Signal", "Setup", "Contacts"};
+
+// The Home row shows kTileCount apps at a time. dockFirst is the first one shown.
+static int dockFirst = 0;
+static void dockScrollBy(int d)
+{
+    int maxFirst = max(0, appCount - kTileCount);
+    dockFirst = constrain(dockFirst + d, 0, maxFirst);
+}
 static const char *soonName = "";
 
 struct NodeEntry {
@@ -1146,7 +1154,7 @@ static void drawHome()
     useFontSmall();
     putText(16, 143, "APPLICATIONS", theme().accent, glassBase());
     for (int i = 0; i < kTileCount; i++) {
-        int id = appOrder[i];
+        int id = appOrder[dockFirst + i];
         int cx = 31 + i * 51, cy = 178;
         bool sel = (homeSel == i);
         if (sel) {
@@ -1164,6 +1172,10 @@ static void drawHome()
         centerText(cx, 204, kAppNames[id], sel ? theme().accent : theme().fg, glassBase());
         if (id == 0 && unreadChat > 0) drawBadge(cx + 17, cy - 17, unreadChat);
     }
+    // Edge arrows show that the row has more apps off screen.
+    uint16_t hint = mix(theme().fg, bgColor(), 110);
+    if (dockFirst > 0) canvas.fillTriangle(2, 178, 6, 174, 6, 182, hint);
+    if (dockFirst + kTileCount < appCount) canvas.fillTriangle(317, 178, 313, 174, 313, 182, hint);
 }
 
 static void drawPublic()
@@ -2041,10 +2053,10 @@ static void handleKey(int c)
             else if (c == 's') homeSel = (w * 2 < kTileCount) ? w * 2 : kTileCount - 1;
             else if (c == '\r' || c == '\n') activateWidget(w);
         } else {
-            if (c == 'a') homeSel = (homeSel + kTileCount - 1) % kTileCount;
-            else if (c == 'd') homeSel = (homeSel + 1) % kTileCount;
+            if (c == 'a') { if (homeSel > 0) homeSel--; else dockScrollBy(-1); }
+            else if (c == 'd') { if (homeSel < kTileCount - 1) homeSel++; else dockScrollBy(1); }
             else if (c == 'w') homeSel = kWidgetFirst + (homeSel / 2 < 2 ? homeSel / 2 : 2);
-            else if (c == '\r' || c == '\n') openTile(appOrder[homeSel]);
+            else if (c == '\r' || c == '\n') openTile(appOrder[dockFirst + homeSel]);
         }
     } else if (screen == Screen::Public) {
         if (c == '\r' || c == '\n') {
@@ -2318,6 +2330,9 @@ static void recordCalTap(uint16_t x, uint16_t y)
 static uint16_t touchDownX = 0, touchDownY = 0;
 static int touchAnchor = 0;
 static bool touchDragged = false;
+static int touchAnchorX = 0;
+static bool touchOnRelease = false;   // tap fires on finger up (grid and Home)
+static bool touchInDock = false;      // touch started on the Home app row
 
 static void handleTouchTap(uint16_t x, uint16_t y)
 {
@@ -2342,7 +2357,7 @@ static void handleTouchTap(uint16_t x, uint16_t y)
         } else if (sy >= 140 && sy < 194) {
             int idx = constrain(sx / 53, 0, kTileCount - 1);
             homeSel = idx;
-            openTile(appOrder[idx]);
+            openTile(appOrder[dockFirst + idx]);
         }
     } else if (isSettingsScreen(screen)) {
         char tmp[8][40];
@@ -2395,11 +2410,16 @@ static void pollTouch()
             // Measured layout: X low/high at bytes 0-1, Y low/high at bytes 2-3, size at byte 4.
             uint16_t x = p[0] | (p[1] << 8);
             uint16_t y = p[2] | (p[3] << 8);
+            int sx = 0, sy = 0;
+            touchToScreen(x, y, sx, sy);
             if (!wasDown) {
                 touchDownX = x;
                 touchDownY = y;
-                touchAnchor = 239 - static_cast<int>(x);   // screen Y, as handleTouchTap maps it
                 touchDragged = false;
+                touchOnRelease = (screen == Screen::AppGrid || screen == Screen::Home);
+                touchInDock = (screen == Screen::Home && sy >= 158 && sy < 200);
+                touchAnchor = sy;
+                touchAnchorX = sx;
                 Serial.printf("touch raw x=%u y=%u\n", x, y);
                 if (screen == Screen::Calibrate) {
                     if (millis() - lastTap > 400) {
@@ -2407,21 +2427,24 @@ static void pollTouch()
                         recordCalTap(x, y);
                         drawScreen();
                     }
-                } else if (screen != Screen::AppGrid && millis() - lastTap > 400) {
+                } else if (!touchOnRelease && millis() - lastTap > 400) {
                     lastTap = millis();
                     handleTouchTap(x, y);
                 }
             } else if (screen == Screen::AppGrid) {
-                // Dragging scrolls the grid one row per 28 px. A drag never opens an app.
-                int sy = 239 - static_cast<int>(x);
+                // Dragging scrolls the grid one row per 28 px.
                 while (sy - touchAnchor >= 28) { appScrollBy(-1); touchAnchor += 28; touchDragged = true; }
                 while (touchAnchor - sy >= 28) { appScrollBy(1); touchAnchor -= 28; touchDragged = true; }
+            } else if (touchInDock) {
+                // Dragging along the Home row scrolls it one app per 40 px.
+                while (sx - touchAnchorX >= 40) { dockScrollBy(-1); touchAnchorX += 40; touchDragged = true; }
+                while (touchAnchorX - sx >= 40) { dockScrollBy(1); touchAnchorX -= 40; touchDragged = true; }
             }
         }
         wasDown = true;
     } else {
-        // Grid taps fire on release, so a drag that starts on a tile does not open it.
-        if (wasDown && screen == Screen::AppGrid && !touchDragged && millis() - lastTap > 400) {
+        // Taps on these screens fire on release, so a drag never opens an app.
+        if (wasDown && touchOnRelease && !touchDragged && millis() - lastTap > 400) {
             lastTap = millis();
             handleTouchTap(touchDownX, touchDownY);
         }
