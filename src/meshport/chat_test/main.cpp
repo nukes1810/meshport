@@ -331,6 +331,41 @@ static constexpr uint16_t kTrackOff = 0x4208;
 
 static void useFont() { canvas.setFont(&fonts::Font2); }
 
+// Blend two RGB565 colors. t = 0 gives a, t = 255 gives b.
+static uint16_t mix(uint16_t a, uint16_t b, int t)
+{
+    int ar = (a >> 11) & 31, ag = (a >> 5) & 63, ab = a & 31;
+    int br = (b >> 11) & 31, bg = (b >> 5) & 63, bb = b & 31;
+    int r = ar + (br - ar) * t / 255;
+    int g = ag + (bg - ag) * t / 255;
+    int bl = ab + (bb - ab) * t / 255;
+    return static_cast<uint16_t>((r << 11) | (g << 5) | bl);
+}
+
+// Background: a soft vertical gradient, lit from the top.
+static void drawBackdrop()
+{
+    uint16_t top = mix(bgColor(), theme().accent, 40);
+    uint16_t bottom = bgColor();
+    for (int y = 0; y < 240; y++) {
+        canvas.drawFastHLine(0, y, 320, mix(top, bottom, y * 255 / 239));
+    }
+}
+
+// Glass card: a translucent-looking panel with a bright top sheen and a light rim.
+// LovyanGFX has no alpha blending, so the glass is faked with layered colors.
+static void glassCard(int x, int y, int w, int h, int r)
+{
+    uint16_t base = mix(theme().panel, TFT_WHITE, 18);
+    uint16_t sheen = mix(theme().panel, TFT_WHITE, 46);
+    canvas.fillRoundRect(x, y, w, h, r, base);
+    int sheenH = h / 2 - 1;
+    if (sheenH > 2) {
+        canvas.fillRoundRect(x + 2, y + 2, w - 4, sheenH, r > 2 ? r - 2 : 1, sheen);
+    }
+    canvas.drawRoundRect(x, y, w, h, r, mix(theme().panel, TFT_WHITE, 110));
+}
+
 static void putText(int x, int y, const char *s, uint16_t fg, uint16_t bg)
 {
     canvas.setTextColor(fg, bg);
@@ -359,8 +394,7 @@ static void drawHeader(const String &title)
 
 static void drawPanel(int x, int y, int w, int h)
 {
-    canvas.fillRoundRect(x, y, w, h, 8, theme().panel);
-    canvas.drawRoundRect(x, y, w, h, 8, kBorder);
+    glassCard(x, y, w, h, 10);
 }
 
 static void drawToggle(int x, int y, bool on)
@@ -372,7 +406,7 @@ static void drawToggle(int x, int y, bool on)
 static void drawHome()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
 
     // Status bar: uptime on the left, link pills on the right.
     unsigned long mins = millis() / 60000;
@@ -402,7 +436,7 @@ static void drawHome()
     String rows[3] = {String(heard), String("Last: ") + lastMsg, String("LongFast 906.9")};
     for (int i = 0; i < 3; i++) {
         int y = 58 + i * 20;
-        canvas.fillRoundRect(12, y, 138, 16, 5, bgColor());
+        glassCard(12, y, 138, 16, 5);
         putText(18, y, rows[i].c_str(), theme().fg, bgColor());
     }
 
@@ -438,13 +472,12 @@ static void drawHome()
         centerText(cx, 191, kTiles[i], sel ? theme().accent : theme().fg, bgColor());
     }
 
-    centerText(160, 220, "w s a d move   Enter opens", kMuted, bgColor());
 }
 
 static void drawPublic()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader("Public chat");
     // Settings shortcut, top right.
     canvas.fillRoundRect(256, 2, 60, 18, 8, theme().accent);
@@ -455,7 +488,7 @@ static void drawPublic()
     int row = 0;
     for (size_t i = first; i < chatLines.size(); i++, row++) {
         int y = 28 + row * 19;
-        canvas.fillRoundRect(4, y, 312, 17, 6, theme().panel);
+        glassCard(4, y, 312, 17, 6);
         putText(12, y + 1, chatLines[i].c_str(), theme().fg, theme().panel);
     }
 
@@ -475,7 +508,7 @@ static void drawPublic()
 static void drawNodes()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     char title[24];
     snprintf(title, sizeof(title), "Nodes (%u)", (unsigned)nodes.size());
     drawHeader(title);
@@ -490,7 +523,7 @@ static void drawNodes()
     uint32_t now = millis();
     for (size_t i = 0; i < nodes.size() && i < 6; i++) {
         int y = 30 + static_cast<int>(i) * 32;
-        canvas.fillRoundRect(6, y, 308, 27, 7, theme().panel);
+        glassCard(6, y, 308, 27, 7);
 
         char id[12];
         snprintf(id, sizeof(id), "%08lX", (unsigned long)nodes[i].id);
@@ -509,13 +542,12 @@ static void drawNodes()
         snprintf(info, sizeof(info), "%ddBm %lus", r, (unsigned long)((now - nodes[i].lastMs) / 1000));
         putText(184, y + 5, info, theme().fg, theme().panel);
     }
-    centerText(160, 224, "q or Home to go back", kMuted, bgColor());
 }
 
 static void drawSettings()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader("Settings");
 
     char items[kSettingsCount][32];
@@ -530,19 +562,18 @@ static void drawSettings()
     for (int i = 0; i < kSettingsCount; i++) {
         bool sel = (i == settingsSel);
         int y = 36 + i * 26;
-        canvas.fillRoundRect(6, y, 308, 22, 6, sel ? theme().accent : theme().panel);
+        if (sel) canvas.fillRoundRect(6, y, 308, 22, 6, theme().accent);
+        else glassCard(6, y, 308, 22, 6);
         putText(14, y + 3, items[i], sel ? bgColor() : theme().fg, sel ? theme().accent : theme().panel);
     }
-    centerText(160, 224, "Enter change   q back", kMuted, bgColor());
 }
 
 static void drawSoon()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader(soonName);
     centerText(160, 100, "Coming in a later build", theme().fg, bgColor());
-    centerText(160, 220, "q or Home to go back", kMuted, bgColor());
 }
 
 static int signalY(float rssi)
@@ -556,7 +587,7 @@ static int signalY(float rssi)
 static void drawSpectrum()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader("Spectrum");
     drawPanel(4, 28, 312, 168);
     if (!specScanned) {
@@ -580,13 +611,12 @@ static void drawSpectrum()
     }
     putText(4, 202, "902 MHz", kMuted, bgColor());
     putText(256, 202, "927 MHz", kMuted, bgColor());
-    centerText(160, 224, "Enter scan   q back", kMuted, bgColor());
 }
 
 static void drawSignal()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader("Signal");
     drawPanel(4, 28, 312, 168);
     canvas.drawFastHLine(10, signalY(-60), 300, kBorder);
@@ -604,24 +634,22 @@ static void drawSignal()
     float last = rssiHist.empty() ? 0 : rssiHist.back();
     snprintf(line, sizeof(line), "RSSI %.0f dBm   SNR %.1f dB", last, lastSnr);
     putText(10, 202, line, theme().fg, bgColor());
-    centerText(160, 224, "q back", kMuted, bgColor());
 }
 
 static void drawContacts()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     drawHeader("Contacts");
     drawPanel(4, 34, 312, 120);
     centerText(160, 64, "Encrypted contacts", theme().fg, theme().panel);
     centerText(160, 92, "Coming after the two-device test", kMuted, theme().panel);
-    centerText(160, 224, "q or Home to go back", kMuted, bgColor());
 }
 
 static void drawCalibrate()
 {
     useFont();
-    canvas.fillScreen(bgColor());
+    drawBackdrop();
     static const int kTargetX[4] = {12, 307, 12, 307};
     static const int kTargetY[4] = {34, 34, 227, 227};
     for (int i = 0; i < 4; i++) {
