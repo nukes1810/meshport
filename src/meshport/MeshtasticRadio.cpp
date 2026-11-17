@@ -42,10 +42,9 @@ bool MeshtasticRadio::send(const std::vector<uint8_t> &frame)
     int16_t st = radio_.transmit(frame.data(), frame.size());
     lastTxError_ = st;
     radio_.setDio1Action(onDio1);
-    if (st != RADIOLIB_ERR_NONE) {
-        return false;
-    }
-    return startReceive();
+    // Always return to receive, even after a failed transmit, so the radio never stays deaf.
+    bool rxOk = startReceive();
+    return st == RADIOLIB_ERR_NONE && rxOk;
 }
 
 bool MeshtasticRadio::startReceive()
