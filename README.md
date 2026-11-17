@@ -33,3 +33,9 @@ Attach an antenna before transmitting. Transmitting without one can damage the r
 ## License
 
 GPL-3.0. See LICENSE.
+
+## Direct messages (in progress)
+
+`src/meshport/SecureDirect.*`: X25519 key agreement, HKDF-SHA256, and ChaCha20-Poly1305 per message.
+Host tests check the RFC 7748 X25519 and RFC 5869 HKDF vectors, round trips, tamper detection, and AAD binding.
+The device backend (`SecureBackend_psa.cpp`, PSA Crypto) is not yet compiled or tested on hardware.
