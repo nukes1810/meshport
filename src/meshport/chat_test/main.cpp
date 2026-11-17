@@ -472,6 +472,88 @@ static void pollTrackball()
         t.lastHigh = high;
     }
 }
+// GT911 capacitive touch (T-Deck Plus). Raw touch coordinates are logged on each tap;
+// the screen mapping assumes a landscape display and is verified on the device.
+static uint8_t gt911Addr = 0;
+
+static bool gt911Probe(uint8_t a)
+{
+    Wire.beginTransmission(a);
+    return Wire.endTransmission() == 0;
+}
+
+static bool gt911Read(uint16_t reg, uint8_t *buf, size_t len)
+{
+    Wire.beginTransmission(gt911Addr);
+    Wire.write(static_cast<uint8_t>(reg >> 8));
+    Wire.write(static_cast<uint8_t>(reg & 0xFF));
+    if (Wire.endTransmission(false) != 0) return false;
+    size_t got = Wire.requestFrom(gt911Addr, static_cast<uint8_t>(len));
+    if (got != len) return false;
+    for (size_t i = 0; i < len; i++) buf[i] = Wire.read();
+    return true;
+}
+
+static bool gt911Write(uint16_t reg, uint8_t v)
+{
+    Wire.beginTransmission(gt911Addr);
+    Wire.write(static_cast<uint8_t>(reg >> 8));
+    Wire.write(static_cast<uint8_t>(reg & 0xFF));
+    Wire.write(v);
+    return Wire.endTransmission() == 0;
+}
+
+static void setupTouch()
+{
+    if (gt911Probe(0x5D)) gt911Addr = 0x5D;
+    else if (gt911Probe(0x14)) gt911Addr = 0x14;
+    if (gt911Addr) Serial.printf("touch GT911 at 0x%02X\n", gt911Addr);
+    else Serial.println("no touch controller found (standard T-Deck has none)");
+}
+
+static void handleTouchTap(uint16_t x, uint16_t y)
+{
+    // Landscape mapping: screen x follows the touch y axis, screen y is inverted touch x.
+    int sx = constrain(static_cast<int>(y), 0, 319);
+    int sy = constrain(239 - static_cast<int>(x), 0, 239);
+    Serial.printf("tap screen x=%d y=%d\n", sx, sy);
+    if (screen == Screen::Home) {
+        if (sy < 22) return;
+        int col = constrain(sx / 107, 0, 2);
+        int row = constrain((sy - 22) / 110, 0, 1);
+        homeSel = row * 3 + col;
+        openTile(homeSel);
+    } else if (sy < 18) {
+        goHome();
+    }
+    drawScreen();
+}
+
+static void pollTouch()
+{
+    static bool wasDown = false;
+    static uint32_t last = 0;
+    if (!gt911Addr) return;
+    if (millis() - last < 30) return;
+    last = millis();
+    uint8_t status = 0;
+    if (!gt911Read(0x814E, &status, 1)) return;
+    if (!(status & 0x80)) return;
+    uint8_t points = status & 0x0F;
+    if (points > 0) {
+        uint8_t p[8];
+        if (gt911Read(0x8150, p, 8) && !wasDown) {
+            uint16_t x = p[1] | (p[2] << 8);
+            uint16_t y = p[3] | (p[4] << 8);
+            Serial.printf("touch raw x=%u y=%u\n", x, y);
+            handleTouchTap(x, y);
+        }
+        wasDown = true;
+    } else {
+        wasDown = false;
+    }
+    gt911Write(0x814E, 0);
+}
 #endif
 
 void setup()
@@ -523,6 +605,7 @@ void setup()
     digitalWrite(42, HIGH);
     Wire.begin(18, 8);         // T-Deck I2C (keyboard)
     setupTrackball();
+    setupTouch();
     lcd.init();
     lcd.setRotation(1);
     addLine("Enter on a tile to open it");
@@ -549,6 +632,7 @@ void loop()
 #ifdef MESHPORT_TDECK_SCREEN
     pollKeyboard();
     pollTrackball();
+    pollTouch();
 #endif
 
     if (driver->poll(rx, rssi, snr)) {
